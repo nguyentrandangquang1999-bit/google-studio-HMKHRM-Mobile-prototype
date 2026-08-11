@@ -1,0 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #1e40af;
+  --color-primary-light: #eff6ff;
+  --color-primary-dark: #1e3a8a;
+  
+  --color-success: #10b981;
+  --color-success-light: #ecfdf5;
+  
+  --color-error: #ef4444;
+  --color-error-light: #fef2f2;
+  
+  --color-warning: #f59e0b;
+  --color-warning-light: #fffbeb;
+  
+  --color-background: #f8fafc;
+  --color-surface: #ffffff;
+  
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  
+  --color-text-main: #0f172a;
+  --color-text-muted: #64748b;
+  
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+
+  --animate-spin-slow: spin 3s linear infinite;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-text-main font-sans antialiased;
+  }
+}
+
+/* Mobile App Simulation Container */
+.mobile-container {
+  @apply mx-auto w-full max-w-md bg-surface min-h-screen relative overflow-hidden flex flex-col border-x border-slate-100;
+}
+
+/* Glassmorphism utilities */
+.glass {
+  @apply bg-white/70 backdrop-blur-md border border-white/20;
+}
+
+/* Custom shadow tiers */
+.shadow-soft {
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
+.shadow-card {
+  box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.04), 0 2px 6px -1px rgb(0 0 0 / 0.03);
+}
+
+/* Hide scrollbar for clean look */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

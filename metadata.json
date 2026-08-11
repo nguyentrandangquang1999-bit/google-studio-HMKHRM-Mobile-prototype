@@ -1,0 +1,11 @@
+{
+  "name": "Remix 2306: HMK HRM Employee App",
+  "description": "Ứng dụng di động nội bộ quản lý chấm công, công việc và nhân sự",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
