@@ -603,12 +603,16 @@ export default function Schedule() {
                           <span
                             className={cn(
                               "px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md",
-                              shift.isBuddyStore
+                              shift.isSupportShift
+                                ? "bg-indigo-100 text-indigo-700 border border-indigo-200"
+                                : shift.isReturnShift
+                                ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                : shift.isBuddyStore
                                 ? "bg-indigo-100 text-indigo-700"
                                 : "bg-gray-100 text-gray-700",
                             )}
                           >
-                            {shift.shiftName}
+                            {shift.isSupportShift ? "HỖ TRỢ" : shift.isReturnShift ? "CA QUAY LẠI" : shift.shiftName}
                           </span>
                           <span className="text-xs font-bold text-gray-500 flex items-center gap-1.5">
                             <span className="w-1 h-1 rounded-full bg-gray-400"></span>

@@ -60,10 +60,23 @@ export type LeaveCancelRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "AU
 export type AttendanceTicketStatus = "PENDING" | "APPROVED" | "REJECTED" | "AUTO_REJECTED" | "CANCELLED";
 export type AttendanceOutcomeType = "ANNUAL_LEAVE" | "UNPAID_ABSENCE" | null;
 
+export type AttendanceTicketType =
+  | "missing_both"
+  | "missing_check_in"
+  | "missing_checkout"
+  | "forgot_in"
+  | "forgot_out"
+  | "device_error"
+  | "security_violation"
+  | "travel_return";
+
+export type SecurityViolationType = "GPS" | "WIFI" | "DEVICE";
+export type AttendanceActionType = "CHECK_IN" | "CHECK_OUT";
+
 export type AttendanceTicket = {
   id: string;
   employeeId: string;
-  type: "missing_both" | "forgot_in" | "forgot_out" | "device_error";
+  type: AttendanceTicketType;
   date: Date;
   actualTime?: string;
   reason: string;
@@ -74,12 +87,23 @@ export type AttendanceTicket = {
     timeStr: string;
     storeName: string;
     hours: number;
+    isReturnShift?: boolean;
+    isSupportShift?: boolean;
   };
   submittedAt: Date;
   status: AttendanceTicketStatus;
   outcomeType?: AttendanceOutcomeType;
   systemReason?: string;
   managerNote?: string;
+  violationType?: SecurityViolationType;
+  actionType?: AttendanceActionType;
+  claimMinutes?: number;
+  actualAbsenceMinutes?: number;
+  checkoutBTime?: string;
+  checkinATime?: string;
+  isExplained?: boolean;
+  employeeExplanation?: string;
+  dispatchGroupId?: string;
 };
 
 export type LeaveCancelRequest = {
@@ -163,6 +187,19 @@ export type Shift = {
   isPendingSwap?: boolean;
   isBuddyStore?: boolean;
   requireHandshake?: boolean;
+  isSandwichHandshake?: boolean;
+  isSupportShift?: boolean;
+  isReturnShift?: boolean;
+  dispatchGroupId?: string;
+  sandwichDetails?: {
+    originalStore: string;
+    supportStore: string;
+    returnStore: string;
+    originalHours: string;
+    supportHours: string;
+    returnHours: string;
+    status: "pending" | "accepted" | "rejected";
+  };
   cancelReason?: string; // e.g., "no_show_replaced"
   isAdhoc?: boolean;
   adhocReason?: string;
@@ -232,6 +269,26 @@ type AppContextType = {
     ticket: Omit<AttendanceTicket, "id" | "employeeId" | "submittedAt" | "status">
   ) => AttendanceTicket;
   cancelPendingAttendanceTicket: (id: string) => void;
+  submitSecurityTicket: (data: {
+    shift: Shift;
+    action: AttendanceActionType;
+    violationType: SecurityViolationType;
+    reason: string;
+  }) => AttendanceTicket;
+  submitMissingCheckInExplanation: (ticketId: string, reason: string) => void;
+  autoCancelMissingCheckInOnSuccess: (shiftId?: string) => AttendanceTicket | undefined;
+  submitTravelClaimTicket: (data: {
+    shiftId: string;
+    storeA: string;
+    storeB: string;
+    checkoutBTime: string;
+    checkinATime: string;
+    actualAbsenceMinutes: number;
+    claimMinutes: number;
+  }) => AttendanceTicket;
+  acceptSandwichHandshake: (shiftId: string) => void;
+  rejectSandwichHandshake: (shiftId: string, reason?: string) => void;
+  transitionShiftToMissingBoth: (shiftId?: string) => AttendanceTicket;
 
   // Briefing Management
   briefings: ShiftBriefing[];
@@ -414,13 +471,27 @@ const generateShifts = (): Shift[] => {
   );
 
   finalShifts.push({
-    id: `case_pending_today`,
+    id: `case_approved_today`,
     date: today,
     statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
     shiftName: "Ca Sáng",
     timeStr: "08:00 - 15:00",
     hours: 7,
     currentStaff: 4,
+    maxStaff: 5,
+    status: "approved",
+    storeName: "HMK Nguyễn Trãi",
+    skillTag: "Tư vấn",
+  });
+
+  finalShifts.push({
+    id: `case_pending_today`,
+    date: today,
+    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
+    shiftName: "Ca Chiều",
+    timeStr: "15:00 - 22:00",
+    hours: 7,
+    currentStaff: 3,
     maxStaff: 5,
     status: "pending",
     storeName: "HMK Nguyễn Trãi",
@@ -445,16 +516,26 @@ const generateShifts = (): Shift[] => {
     id: `case_handshake_today`,
     date: today,
     statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
-    shiftName: "Ca Gãy",
-    timeStr: "10:00 - 14:00",
-    hours: 4,
-    currentStaff: 5,
-    maxStaff: 5,
+    shiftName: "Điều động Kẹp Ca (A → B → A)",
+    timeStr: "08:00 - 18:00",
+    hours: 10,
+    currentStaff: 1,
+    maxStaff: 1,
     status: "approved",
-    storeName: "HMK Cầu Giấy",
+    storeName: "HMK Nguyễn Trãi",
     skillTag: "Tư vấn",
     isBuddyStore: true,
     requireHandshake: true,
+    isSandwichHandshake: true,
+    sandwichDetails: {
+      originalStore: "HMK Nguyễn Trãi (Store A)",
+      supportStore: "HMK Cầu Giấy (Store B)",
+      returnStore: "HMK Nguyễn Trãi (Store A)",
+      originalHours: "08:00 - 11:00",
+      supportHours: "11:00 - 15:00",
+      returnHours: "15:00 - 18:00",
+      status: "pending",
+    },
   });
 
   finalShifts.push({
@@ -1123,6 +1204,282 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  const submitSecurityTicket = (data: {
+    shift: Shift;
+    action: AttendanceActionType;
+    violationType: SecurityViolationType;
+    reason: string;
+  }): AttendanceTicket => {
+    const empId = user?.id || "u1";
+    // Duplicate detection scoped by: Employee + Shift + Action (CHECK_IN/CHECK_OUT) + Violation Type (GPS/WIFI/DEVICE) + Active Status
+    const existing = attendanceTickets.find(
+      (t) =>
+        t.type === "security_violation" &&
+        t.employeeId === empId &&
+        t.relatedShift?.id === data.shift.id &&
+        t.actionType === data.action &&
+        t.violationType === data.violationType &&
+        t.status !== "CANCELLED"
+    );
+
+    if (existing) {
+      // Update reason if new reason provided and return existing ticket
+      setAttendanceTickets((prev) =>
+        prev.map((t) => (t.id === existing.id ? { ...t, reason: data.reason } : t))
+      );
+      return { ...existing, reason: data.reason };
+    }
+
+    const shiftDisplayName = data.shift.isReturnShift
+      ? `Ca quay lại — ${data.shift.storeName}`
+      : data.shift.isSupportShift
+      ? `Ca Hỗ Trợ — ${data.shift.storeName}`
+      : data.shift.shiftName;
+
+    const newTicket: AttendanceTicket = {
+      id: `TK-SEC-${Date.now().toString().slice(-4)}`,
+      employeeId: empId,
+      type: "security_violation",
+      date: new Date(),
+      reason: data.reason,
+      useAnnualLeaveIntent: false,
+      relatedShift: {
+        id: data.shift.id,
+        shiftName: shiftDisplayName,
+        timeStr: data.shift.timeStr,
+        storeName: data.shift.storeName,
+        hours: data.shift.hours,
+        isReturnShift: data.shift.isReturnShift,
+        isSupportShift: data.shift.isSupportShift,
+      },
+      submittedAt: new Date(),
+      status: "PENDING",
+      violationType: data.violationType,
+      actionType: data.action,
+    };
+
+    setAttendanceTickets((prev) => [newTicket, ...prev]);
+    return newTicket;
+  };
+
+  const submitMissingCheckInExplanation = (ticketId: string, reason: string) => {
+    setAttendanceTickets((prev) =>
+      prev.map((t) =>
+        t.id === ticketId
+          ? {
+              ...t,
+              reason: reason,
+              employeeExplanation: reason,
+              isExplained: true,
+              systemReason: "Đã giải trình bởi nhân viên — Chờ kết thúc ca",
+            }
+          : t
+      )
+    );
+  };
+
+  const autoCancelMissingCheckInOnSuccess = (shiftId?: string): AttendanceTicket | undefined => {
+    let cancelledTicket: AttendanceTicket | undefined;
+    setAttendanceTickets((prev) =>
+      prev.map((t) => {
+        if (
+          t.type === "missing_check_in" &&
+          t.status === "PENDING" &&
+          (!shiftId || t.relatedShift?.id === shiftId || !t.relatedShift)
+        ) {
+          cancelledTicket = {
+            ...t,
+            status: "CANCELLED",
+            systemReason: "Hệ thống tự động hủy do nhân viên đã Check-in thành công sau đó",
+          };
+          return cancelledTicket;
+        }
+        return t;
+      })
+    );
+    return cancelledTicket;
+  };
+
+  const submitTravelClaimTicket = (data: {
+    shiftId: string;
+    storeA: string;
+    storeB: string;
+    checkoutBTime: string;
+    checkinATime: string;
+    actualAbsenceMinutes: number;
+    claimMinutes: number;
+  }): AttendanceTicket => {
+    const newTicket: AttendanceTicket = {
+      id: `TK-TRV-${Date.now().toString().slice(-4)}`,
+      employeeId: user?.id || "u1",
+      type: "travel_return",
+      date: new Date(),
+      reason: `Khai báo thời gian di chuyển từ ${data.storeB} về ${data.storeA} (${data.claimMinutes}/${data.actualAbsenceMinutes} phút)`,
+      useAnnualLeaveIntent: false,
+      relatedShift: {
+        id: data.shiftId,
+        shiftName: `Ca quay lại — ${data.storeA}`,
+        timeStr: `${data.checkinATime} - 18:00`,
+        storeName: data.storeA,
+        hours: 3,
+        isReturnShift: true,
+      },
+      submittedAt: new Date(),
+      status: "PENDING",
+      claimMinutes: data.claimMinutes,
+      actualAbsenceMinutes: data.actualAbsenceMinutes,
+      checkoutBTime: data.checkoutBTime,
+      checkinATime: data.checkinATime,
+    };
+
+    setAttendanceTickets((prev) => [newTicket, ...prev]);
+    return newTicket;
+  };
+
+  const acceptSandwichHandshake = (shiftId: string) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const dispatchGroupId = `DSP-SANDWICH-${Date.now().toString().slice(-6)}`;
+
+    setAvailableShifts((prev) => {
+      const filtered = prev.filter((s) => s.id !== shiftId && s.id !== "case_approved_today");
+
+      const origShift: Shift = {
+        id: `shift_sandwich_orig_${Date.now()}`,
+        date: today,
+        shiftName: "Ca Gốc (Store A)",
+        timeStr: "08:00 - 11:00",
+        hours: 3,
+        currentStaff: 4,
+        maxStaff: 5,
+        status: "approved",
+        storeName: "HMK Nguyễn Trãi (Store A)",
+        skillTag: "Tư vấn",
+        dispatchGroupId: dispatchGroupId,
+      };
+
+      const supportShift: Shift = {
+        id: `shift_sandwich_support_${Date.now()}`,
+        date: today,
+        shiftName: "Ca Hỗ Trợ (Store B)",
+        timeStr: "11:00 - 15:00",
+        hours: 4,
+        currentStaff: 5,
+        maxStaff: 5,
+        status: "approved",
+        storeName: "HMK Cầu Giấy (Store B)",
+        skillTag: "Tư vấn",
+        isBuddyStore: true,
+        isSupportShift: true,
+        dispatchGroupId: dispatchGroupId,
+      };
+
+      const returnShift: Shift = {
+        id: `shift_sandwich_return_${Date.now()}`,
+        date: today,
+        shiftName: "Ca quay lại — HMK Nguyễn Trãi (Store A)",
+        timeStr: "15:00 - 18:00",
+        hours: 3,
+        currentStaff: 4,
+        maxStaff: 5,
+        status: "approved",
+        storeName: "HMK Nguyễn Trãi (Store A)",
+        skillTag: "Tư vấn",
+        isReturnShift: true,
+        dispatchGroupId: dispatchGroupId,
+      };
+
+      return [origShift, supportShift, returnShift, ...filtered];
+    });
+  };
+
+  const rejectSandwichHandshake = (shiftId: string, reason?: string) => {
+    setAvailableShifts((prev) =>
+      prev.map((s) => {
+        if (s.id === shiftId) {
+          return {
+            ...s,
+            requireHandshake: false,
+            status: "rejected",
+            cancelReason: reason || "Nhân viên từ chối điều động kẹp ca",
+          };
+        }
+        return s;
+      })
+    );
+  };
+
+  const transitionShiftToMissingBoth = (shiftId?: string): AttendanceTicket => {
+    const today = new Date();
+    const targetShiftId = shiftId || "case_approved_today";
+    const targetShift = availableShifts.find((s) => s.id === targetShiftId);
+
+    // 1. Find existing missing check in for this exact shift to carry explanation forward
+    const existingMissingIn = attendanceTickets.find(
+      (t) =>
+        t.type === "missing_check_in" &&
+        t.status === "PENDING" &&
+        t.relatedShift?.id === targetShiftId
+    );
+
+    const priorExplanation =
+      existingMissingIn?.employeeExplanation ||
+      (existingMissingIn?.isExplained ? existingMissingIn?.reason : undefined);
+
+    // Cancel ONLY the active missing check-in belonging to this exact shift
+    setAttendanceTickets((prev) =>
+      prev.map((t) => {
+        if (
+          t.type === "missing_check_in" &&
+          t.status === "PENDING" &&
+          t.relatedShift?.id === targetShiftId
+        ) {
+          return {
+            ...t,
+            status: "CANCELLED",
+            systemReason: "Chuyển thành Missing Both do ca đã kết thúc",
+          };
+        }
+        return t;
+      })
+    );
+
+    const shiftDisplayName = targetShift?.isReturnShift
+      ? `Ca quay lại — ${targetShift.storeName}`
+      : targetShift?.isSupportShift
+      ? `Ca Hỗ Trợ — ${targetShift.storeName}`
+      : targetShift?.shiftName || "Ca Sáng";
+
+    // 2. Create missing both ticket preserving explanation
+    const missingBothTicket: AttendanceTicket = {
+      id: `TK-MB-${Date.now().toString().slice(-4)}`,
+      employeeId: user?.id || "u1",
+      type: "missing_both",
+      date: today,
+      reason: priorExplanation
+        ? `Giải trình của nhân viên: "${priorExplanation}". Ca đã kết thúc không có Check-in/Check-out hợp lệ.`
+        : "Ca đã kết thúc nhưng không có ghi nhận Check-in và Check-out hợp lệ.",
+      employeeExplanation: priorExplanation,
+      useAnnualLeaveIntent: false,
+      relatedShift: {
+        id: targetShiftId,
+        shiftName: shiftDisplayName,
+        timeStr: targetShift?.timeStr || "08:00 - 15:00",
+        storeName: targetShift?.storeName || "HMK Nguyễn Trãi",
+        hours: targetShift?.hours || 7,
+        isReturnShift: targetShift?.isReturnShift,
+        isSupportShift: targetShift?.isSupportShift,
+      },
+      submittedAt: today,
+      status: "PENDING",
+      systemReason: "Hệ thống tự động ghi nhận vắng mặt cả ca (Missing Both) sau giờ đóng ca",
+    };
+
+    setAttendanceTickets((prev) => [missingBothTicket, ...prev]);
+    return missingBothTicket;
+  };
+
   const markBriefingAsRead = (id: string) => {
     setBriefings((prev) =>
       prev.map((b) => (b.id === id ? { ...b, isRead: true } : b))
@@ -1178,6 +1535,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         attendanceTickets,
         submitAttendanceTicket,
         cancelPendingAttendanceTicket,
+        submitSecurityTicket,
+        submitMissingCheckInExplanation,
+        autoCancelMissingCheckInOnSuccess,
+        submitTravelClaimTicket,
+        acceptSandwichHandshake,
+        rejectSandwichHandshake,
+        transitionShiftToMissingBoth,
       }}
     >
       {children}

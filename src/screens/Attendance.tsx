@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   MapPin,
   Wifi,
-  Crosshair,
+  Smartphone,
+  Shield,
   Fingerprint,
   CalendarDays,
   AlertTriangle,
-  CheckSquare,
-  Square,
   FileText,
   Camera,
   ChevronRight,
@@ -17,13 +16,24 @@ import {
   XCircle,
   Clock,
   Lock,
+  RefreshCw,
+  X,
+  AlertCircle,
+  Check,
 } from "lucide-react";
-import { format, isSameDay } from "date-fns";
+import { format } from "date-fns";
 import { vi } from "date-fns/locale";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
-import { useApp } from "@/context/AppContext";
-import { useSearchParams, Link, useNavigate } from "react-router-dom";
+import {
+  useApp,
+  Shift,
+  AttendanceTicket,
+  SecurityViolationType,
+  AttendanceActionType,
+} from "@/context/AppContext";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import Toast, { ToastType } from "@/components/Toast";
 
 type AttState =
   | "checking_location"
@@ -32,64 +42,359 @@ type AttState =
   | "working"
   | "checklist_close"
   | "done";
+
 type ShiftType = "morning" | "night";
-type Scenario =
+
+export type ScenarioType =
   | "normal"
-  | "late_out"
-  | "forgot_in"
-  | "forgot_out"
-  | "missing_checkout";
+  | "early_window"
+  | "early_beyond"
+  | "gps_fail"
+  | "wifi_fail"
+  | "device_fail"
+  | "multi_fail"
+  | "missing_in_created"
+  | "missing_in_explained"
+  | "missing_in_then_in"
+  | "missing_both_ended"
+  | "sandwich_handshake"
+  | "sandwich_return_ready"
+  | "travel_return_modal"
+  | "travel_return_invalid"
+  | "return_missing_in";
 
 export default function Attendance() {
   const [searchParams] = useSearchParams();
-  const initScenario = (searchParams.get("scenario") as Scenario) || "normal";
+  const initScenario = (searchParams.get("scenario") as ScenarioType) || "normal";
 
   const [time, setTime] = useState(new Date());
 
-  // Dev State Toggles
-  const [inZone, setInZone] = useState(true);
+  // Dev & Scenario State
+  const [scenario, setScenario] = useState<ScenarioType>(initScenario);
   const [shiftType, setShiftType] = useState<ShiftType>("morning");
-  const [scenario, setScenario] = useState<Scenario>(initScenario);
-  const [showAdhocModal, setShowAdhocModal] = useState(false);
-  const [adhocStore, setAdhocStore] = useState("");
-  const [adhocReason, setAdhocReason] = useState("");
-  const [adhocSkill, setAdhocSkill] = useState("");
-  const [missingCheckoutAlert, setMissingCheckoutAlert] = useState(false);
-  const [adhocStartTime, setAdhocStartTime] = useState<Date | null>(null);
 
-  // App State
+  // Security Status States (GPS, Wi-Fi/MAC, Device)
+  const [gpsStatus, setGpsStatus] = useState<"PASS" | "FAIL">("PASS");
+  const [wifiStatus, setWifiStatus] = useState<"PASS" | "FAIL">("PASS");
+  const [deviceStatus, setDeviceStatus] = useState<"PASS" | "FAIL">("PASS");
+  const [lastCheckedTime, setLastCheckedTime] = useState<string>(
+    format(new Date(), "HH:mm:ss")
+  );
+  const [isCheckingSecurity, setIsCheckingSecurity] = useState(false);
+
+  // App State from Context
   const {
     user,
     setHasCheckedIn,
     availableShifts,
-    acknowledgeDispatch,
+    attendanceTickets,
+    submitAttendanceTicket,
+    submitSecurityTicket,
+    submitMissingCheckInExplanation,
+    autoCancelMissingCheckInOnSuccess,
+    submitTravelClaimTicket,
+    acceptSandwichHandshake,
+    rejectSandwichHandshake,
+    transitionShiftToMissingBoth,
     addAdhocShift,
   } = useApp();
+
   const [attState, setAttState] = useState<AttState>("pending_in");
   const [checks, setChecks] = useState<boolean[]>([false, false, false]);
   const [logs, setLogs] = useState<
     { type: "in" | "out" | "exception"; note: string; time: Date }[]
   >([]);
-
   const [activeShiftId, setActiveShiftId] = useState<string | null>(null);
 
-  // Modals
-  const [showGpsModal, setShowGpsModal] = useState(false);
+  // Toast
+  const [toast, setToast] = useState<{ message: string; subMessage?: string; type: ToastType } | null>(
+    null
+  );
+
+  // Modals & Bottom Sheets
+  const [showSecurityModal, setShowSecurityModal] = useState<{
+    open: boolean;
+    violationType: SecurityViolationType;
+    actionType: AttendanceActionType;
+  } | null>(null);
+
+  const [showViewTicketModal, setShowViewTicketModal] = useState<AttendanceTicket | null>(null);
+  const [showMissingInExplanationModal, setShowMissingInExplanationModal] = useState(false);
+  const [showTravelReturnModal, setShowTravelReturnModal] = useState(false);
+  const [checkoutBTime, setCheckoutBTime] = useState<string | null>("15:03");
+  const [checkinATime, setCheckinATime] = useState<string | null>("15:42");
+  const [travelClaimMinutes, setTravelClaimMinutes] = useState<number>(39);
+  const [travelClaimError, setTravelClaimError] = useState<string | null>(null);
+  const [travelSubmitted, setTravelSubmitted] = useState(false);
+
+  // Helper to parse "HH:mm" to minutes from midnight
+  const parseTimeToMinutes = (timeStr: string): number => {
+    const parts = timeStr.split(":");
+    if (parts.length < 2) return 0;
+    const h = parseInt(parts[0], 10) || 0;
+    const m = parseInt(parts[1], 10) || 0;
+    return h * 60 + m;
+  };
+
+  // Dynamically calculate actual absence minutes from checkout B & checkin A
+  const calculatedActualAbsenceMinutes = useMemo(() => {
+    if (!checkoutBTime || !checkinATime) return 0;
+    const outMins = parseTimeToMinutes(checkoutBTime);
+    const inMins = parseTimeToMinutes(checkinATime);
+    return Math.max(0, inMins - outMins);
+  }, [checkoutBTime, checkinATime]);
+
+  const [showAdhocModal, setShowAdhocModal] = useState(false);
+  const [adhocStore, setAdhocStore] = useState("");
+  const [adhocReason, setAdhocReason] = useState("");
+  const [adhocSkill, setAdhocSkill] = useState("");
+
   const [showLateOutModal, setShowLateOutModal] = useState(false);
-  const [showForgotInModal, setShowForgotInModal] = useState(false);
-  const [showForgotOutModal, setShowForgotOutModal] = useState(false);
-  const [showBlockCheckinModal, setShowBlockCheckinModal] = useState(false);
+
   const navigate = useNavigate();
 
   // Hold Action State
   const [holdProgress, setHoldProgress] = useState(0);
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Apply scenario settings
+  useEffect(() => {
+    applyScenario(scenario);
+  }, [scenario]);
+
+  const applyScenario = (sc: ScenarioType) => {
+    setIsCheckingSecurity(false);
+    setLastCheckedTime(format(new Date(), "HH:mm:ss"));
+
+    switch (sc) {
+      case "normal":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "early_window":
+      case "early_beyond":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "gps_fail":
+        setGpsStatus("FAIL");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        break;
+      case "wifi_fail":
+        setGpsStatus("PASS");
+        setWifiStatus("FAIL");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        break;
+      case "device_fail":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("FAIL");
+        setAttState("pending_in");
+        break;
+      case "multi_fail":
+        setGpsStatus("FAIL");
+        setWifiStatus("FAIL");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        break;
+      case "missing_in_created":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "missing_in_explained":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "missing_in_then_in":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "missing_both_ended":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("done");
+        setHasCheckedIn(false);
+        break;
+      case "sandwich_handshake":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setActiveShiftId("case_handshake_today");
+        break;
+      case "sandwich_return_ready":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        setHasCheckedIn(false);
+        break;
+      case "travel_return_modal":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("working");
+        setHasCheckedIn(true);
+        setTravelClaimMinutes(39);
+        setTravelClaimError(null);
+        setShowTravelReturnModal(true);
+        break;
+      case "travel_return_invalid":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("working");
+        setHasCheckedIn(true);
+        setTravelClaimMinutes(45); // Invalid > 39
+        setTravelClaimError("Thời gian đề nghị không được lớn hơn thời gian vắng thực tế.");
+        setShowTravelReturnModal(true);
+        break;
+      case "return_missing_in":
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+        setAttState("pending_in");
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Clock
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 1. Enter Attendance screen trigger (mount)
+  useEffect(() => {
+    recheckSecurity();
+  }, []);
+
+  // 2. App returns to foreground (visibilitychange & focus) & 4. Return to Attendance from another screen
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        recheckSecurity();
+      }
+    };
+    const handleWindowFocus = () => {
+      recheckSecurity();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+    };
+  }, []);
+
+  // Security recheck trigger function (used for triggers 1, 2, 3, 4)
+  const recheckSecurity = () => {
+    setIsCheckingSecurity(true);
+    setTimeout(() => {
+      setIsCheckingSecurity(false);
+      setLastCheckedTime(format(new Date(), "HH:mm:ss"));
+      // Re-apply based on current scenario or toggle
+      if (
+        scenario === "gps_fail" ||
+        scenario === "wifi_fail" ||
+        scenario === "device_fail" ||
+        scenario === "multi_fail"
+      ) {
+        // Preserves current fail state in fail scenarios
+      } else {
+        setGpsStatus("PASS");
+        setWifiStatus("PASS");
+        setDeviceStatus("PASS");
+      }
+    }, 400);
+  };
+
+  // Immediate synchronous security evaluation right before final punch (triggers 5 & 6)
+  const evaluateSecurityNow = (): boolean => {
+    const nowTime = format(new Date(), "HH:mm:ss");
+    setLastCheckedTime(nowTime);
+    return gpsStatus === "PASS" && wifiStatus === "PASS" && deviceStatus === "PASS";
+  };
+
+  // Check if security is completely valid
+  const isSecurityValid =
+    gpsStatus === "PASS" && wifiStatus === "PASS" && deviceStatus === "PASS";
+
+  // Filter approved shifts for today
+  const todayShifts = availableShifts
+    .filter((s) => s.status === "approved" || s.requireHandshake)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  const currentShift =
+    todayShifts.find((s) => s.id === activeShiftId) || todayShifts[0];
+
+  // Look for existing security tickets for the current shift & action
+  const currentAction: AttendanceActionType =
+    attState === "working" ? "CHECK_OUT" : "CHECK_IN";
+
+  // Item 2: Duplicate detection scoped by Employee + Shift + Action (CHECK_IN/CHECK_OUT) + Violation Type + Active Ticket State
+  const getExistingTicketForViolation = (violationType: SecurityViolationType) => {
+    return attendanceTickets.find(
+      (t) =>
+        t.type === "security_violation" &&
+        t.violationType === violationType &&
+        t.actionType === currentAction &&
+        t.status !== "CANCELLED" &&
+        (!user || t.employeeId === user.id) &&
+        (!currentShift || t.relatedShift?.id === currentShift.id)
+    );
+  };
+
+  // Check if there is an active Missing Check-In ticket
+  const activeMissingInTicket = attendanceTickets.find(
+    (t) =>
+      t.type === "missing_check_in" &&
+      t.status === "PENDING" &&
+      (!currentShift || t.relatedShift?.id === currentShift.id)
+  );
+
+  const activeMissingBothTicket = attendanceTickets.find(
+    (t) =>
+      t.type === "missing_both" &&
+      t.status === "PENDING" &&
+      (!currentShift || t.relatedShift?.id === currentShift.id)
+  );
+
+  // Missing Check-in Gate: if active missing check in exists and is not explained, block normal check-in
+  const isMissingInUnexplained =
+    scenario === "missing_in_created" ||
+    scenario === "return_missing_in" ||
+    (Boolean(activeMissingInTicket) && activeMissingInTicket?.isExplained !== true);
+
+  // Hold Action handlers
   const startHoldAction = (action: () => void) => {
+    if (isCheckingSecurity) return;
     if (holdTimerRef.current) clearInterval(holdTimerRef.current);
     let progress = 0;
     holdTimerRef.current = setInterval(() => {
-      progress += 5; // 5% every 50ms = 1000ms = 1 second
+      progress += 5; // 5% every 50ms = 1000ms = 1s hold
       setHoldProgress(progress);
       if (progress >= 100) {
         if (holdTimerRef.current) clearInterval(holdTimerRef.current);
@@ -104,59 +409,106 @@ export default function Attendance() {
     setHoldProgress(0);
   };
 
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (initScenario === "forgot_in") {
-      setShowForgotInModal(true);
-    } else if (initScenario === "forgot_out") {
-      setShowForgotOutModal(true);
-    }
-  }, [initScenario]);
-
-  // Filter approved shifts for demo purposes as "today shifts"
-  const todayShifts = availableShifts
-    .filter((s) => s.status === "approved")
-    .sort((a, b) => a.date.getTime() - b.date.getTime());
-
-  // --- Handlers ---
+  // Check-In Attempt Handler
   const handleCheckInAttempt = () => {
-    if (!inZone) {
-      setShowGpsModal(true);
+    // 1. Trigger 5: Re-evaluate security IMMEDIATELY before submitting real Check-in
+    const freshValid = evaluateSecurityNow();
+    if (!freshValid) {
+      setToast({
+        message: "Không thể chấm công do điều kiện bảo mật chưa hợp lệ.",
+        type: "error",
+      });
       return;
     }
-    // Strategy 4: Block check-in if there are unresolved prior shifts
-    if (scenario === "forgot_in" || scenario === "forgot_out") {
-      setShowBlockCheckinModal(true);
+
+    // 2. Missing Check-In explanation gate: MUST be blocked if unexplained
+    if (isMissingInUnexplained) {
+      setToast({
+        message: "Vui lòng gửi giải trình Missing Check-In trước khi tiếp tục Check-in.",
+        type: "error",
+      });
       return;
     }
+
+    // Scenario specific flows
+    if (scenario === "early_beyond") {
+      proceedCheckIn("Early Check-In Exception (Sớm hơn khung cho phép)");
+      return;
+    }
+
+    if (
+      scenario === "missing_in_explained" ||
+      scenario === "missing_in_then_in" ||
+      activeMissingInTicket
+    ) {
+      // Check-in after missing check-in: auto-cancel missing check-in ticket
+      autoCancelMissingCheckInOnSuccess(currentShift?.id);
+      proceedCheckIn();
+      setToast({
+        message: "Check-in thành công",
+        subMessage: "Ticket Missing Check-In đã được hệ thống tự động hủy.",
+        type: "success",
+      });
+      return;
+    }
+
+    if (scenario === "sandwich_return_ready" || currentShift?.isReturnShift) {
+      proceedCheckIn("Check-in ca quay lại Store A");
+      const punchTimeStr = format(new Date(), "HH:mm");
+      setCheckinATime(punchTimeStr);
+      if (!checkoutBTime) setCheckoutBTime("15:03");
+      const calculatedMins = Math.max(
+        0,
+        parseTimeToMinutes(punchTimeStr) - parseTimeToMinutes(checkoutBTime || "15:03")
+      );
+      setTravelClaimMinutes(calculatedMins > 0 ? calculatedMins : 39);
+      // Trigger travel claim bottom sheet AFTER valid Check-in A
+      setTimeout(() => {
+        setShowTravelReturnModal(true);
+      }, 600);
+      return;
+    }
+
     proceedCheckIn();
   };
 
-  const proceedCheckIn = (reason?: string) => {
+  const proceedCheckIn = (notePrefix?: string) => {
     const isAdhoc = activeShiftId?.startsWith("adhoc_");
+    const punchNote = notePrefix
+      ? notePrefix
+      : isAdhoc
+      ? "Check-in đột xuất"
+      : "Check-in thành công";
+
     setLogs((prev) => [
       {
-        type: reason || isAdhoc ? ("exception" as const) : ("in" as const),
-        note: reason
-          ? `Check-in ngoại lệ: ${reason}`
-          : isAdhoc
-            ? "Check-in đột xuất"
-            : "Check-in thành công",
+        type: notePrefix || isAdhoc ? "exception" : "in",
+        note: punchNote,
         time: new Date(),
       },
       ...prev,
     ]);
+
     setAttState(shiftType === "morning" ? "checklist_open" : "working");
     setHasCheckedIn(true);
+
+    if (!toast) {
+      setToast({
+        message: "Check-in thành công!",
+        type: "success",
+      });
+    }
   };
 
+  // Check-Out Attempt Handler
   const handleCheckOutAttempt = () => {
-    if (scenario === "forgot_in" && attState === "pending_in") {
-      setShowForgotInModal(true);
+    // Trigger 6: Re-evaluate security IMMEDIATELY before submitting real Check-out
+    const freshValid = evaluateSecurityNow();
+    if (!freshValid) {
+      setToast({
+        message: "Không thể Check-out do điều kiện bảo mật chưa hợp lệ.",
+        type: "error",
+      });
       return;
     }
 
@@ -169,14 +521,9 @@ export default function Attendance() {
   };
 
   const processFinalCheckOut = (reason?: string) => {
-    if (scenario === "late_out" && !reason) {
-      setShowLateOutModal(true);
-      return;
-    }
-
     setLogs((prev) => [
       {
-        type: reason || scenario === "forgot_in" ? "exception" : "out",
+        type: reason ? "exception" : "out",
         note: reason ? `Check-out: ${reason}` : "Check-out thành công",
         time: new Date(),
       },
@@ -184,830 +531,1211 @@ export default function Attendance() {
     ]);
     setAttState("done");
     setHasCheckedIn(false);
+    setToast({
+      message: "Check-out hoàn tất ca làm việc!",
+      type: "success",
+    });
+  };
+
+  // Handle Travel Claim Input Change
+  const handleTravelClaimChange = (val: number) => {
+    setTravelClaimMinutes(val);
+    if (val > calculatedActualAbsenceMinutes) {
+      setTravelClaimError(
+        `Thời gian đề nghị không được lớn hơn thời gian vắng thực tế (${calculatedActualAbsenceMinutes} phút).`
+      );
+    } else if (val < 0) {
+      setTravelClaimError("Thời gian đề nghị không hợp lệ.");
+    } else {
+      setTravelClaimError(null);
+    }
+  };
+
+  const handleTravelClaimSubmit = () => {
+    if (!checkoutBTime || !checkinATime) return;
+    if (travelClaimMinutes > calculatedActualAbsenceMinutes || travelClaimMinutes < 0) return;
+
+    submitTravelClaimTicket({
+      shiftId: currentShift?.id || "shift_return",
+      storeA: currentShift?.storeName || "HMK Nguyễn Trãi (Store A)",
+      storeB: "HMK Cầu Giấy (Store B)",
+      checkoutBTime: checkoutBTime,
+      checkinATime: checkinATime,
+      actualAbsenceMinutes: calculatedActualAbsenceMinutes,
+      claimMinutes: travelClaimMinutes,
+    });
+
+    setTravelSubmitted(true);
+    setTimeout(() => {
+      setShowTravelReturnModal(false);
+      setTravelSubmitted(false);
+      setToast({
+        message: "Đã gửi thời gian di chuyển chiều về",
+        subMessage: "Đang chờ Quản lý Store A phê duyệt.",
+        type: "success",
+      });
+    }, 1200);
   };
 
   return (
-    <div className="flex flex-col h-full relative bg-background pb-20">
-      {/* --- SCENARIO TESTING CONTROLS --- */}
-      <div className="mt-8 px-4 pb-8">
-        <div className="bg-gray-100 rounded-lg p-4 border border-gray-200 border-dashed">
-          <h3 className="text-xs font-bold text-gray-500 mb-3 uppercase tracking-wider text-center">
-            Bảng điều khiển Test Case (QA)
-          </h3>
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            <select
-              className="bg-white border border-gray-200 text-gray-900 text-xs font-bold rounded-md px-3 py-2 outline-none focus:border-gray-900"
-              value={shiftType}
-              onChange={(e) => {
-                setShiftType(e.target.value as any);
-                setAttState("pending_in");
-                setLogs([]);
-              }}
-            >
-              <option value="morning">Mô phỏng: Ca Sáng</option>
-              <option value="night">Mô phỏng: Ca Tối</option>
-            </select>
-            <select
-              className="bg-white border border-gray-200 text-gray-900 text-xs font-bold rounded-md px-3 py-2 outline-none focus:border-gray-900"
-              value={scenario}
-              onChange={(e) => {
-                const val = e.target.value as any;
-                setScenario(val);
-                if (val === "missing_checkout") {
-                  setAttState("done");
-                  setMissingCheckoutAlert(true);
-                  setHasCheckedIn(false);
-                } else {
+    <div className="flex flex-col h-full relative bg-slate-50/50 pb-24">
+      {/* Toast */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
+
+      {/* --- SCENARIO TESTING CONTROLS (QA PANEL) --- */}
+      <div className="pt-4 px-4 pb-2">
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-black text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-indigo-600" /> Bảng điều khiển kiểm thử (QA Scenarios)
+            </h3>
+            <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-100">
+              MOB-06 & Attendance
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                Kịch bản Chấm công
+              </label>
+              <select
+                className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-semibold rounded-xl px-3 py-2.5 outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                value={scenario}
+                onChange={(e) => {
+                  const val = e.target.value as ScenarioType;
+                  setScenario(val);
+                }}
+              >
+                <optgroup label="Bảo mật & Check-in Chuẩn">
+                  <option value="normal">1. Chuẩn (Bảo mật 3/3 Hợp lệ, đúng giờ)</option>
+                  <option value="early_window">2. Check-in sớm trong khung cho phép (Hợp lệ)</option>
+                  <option value="early_beyond">3. Check-in sớm hơn khung (Early Exception)</option>
+                </optgroup>
+                <optgroup label="Lỗi Bảo mật Độc lập (Security Fail)">
+                  <option value="gps_fail">4. Lỗi GPS (Không hợp lệ)</option>
+                  <option value="wifi_fail">5. Lỗi Wi-Fi / MAC (Không hợp lệ)</option>
+                  <option value="device_fail">6. Lỗi Thiết bị (Không hợp lệ)</option>
+                  <option value="multi_fail">7. Nhiều lỗi bảo mật cùng lúc (GPS + Wi-Fi)</option>
+                </optgroup>
+                <optgroup label="Missing Check-In & Missing Both">
+                  <option value="missing_in_created">8. Missing Check-In (Hệ thống tạo tự động)</option>
+                  <option value="missing_in_explained">9. Missing Check-In (Đã giải trình - Chờ hết ca)</option>
+                  <option value="missing_in_then_in">10. Missing Check-In -&gt; Check-in thành công (Auto-cancel)</option>
+                  <option value="missing_both_ended">11. Ca kết thúc -&gt; Chuyển thành Missing Both</option>
+                </optgroup>
+                <optgroup label="Kẹp ca (Sandwich A-B-A) & Di chuyển">
+                  <option value="sandwich_handshake">12. Điều động Kẹp Ca A→B→A (Chờ Handshake)</option>
+                  <option value="sandwich_return_ready">13. Ca quay lại A (Sẵn sàng Check-in tại A)</option>
+                  <option value="travel_return_modal">14. Khai báo di chuyển chiều về (Hợp lệ 39p)</option>
+                  <option value="travel_return_invalid">15. Khai báo di chuyển (Test lỗi Claim &gt; Vắng thực tế)</option>
+                  <option value="return_missing_in">16. Ca quay lại - Missing Check-In</option>
+                </optgroup>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                Ca làm việc mô phỏng
+              </label>
+              <select
+                className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-semibold rounded-xl px-3 py-2.5 outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                value={shiftType}
+                onChange={(e) => {
+                  setShiftType(e.target.value as ShiftType);
                   setAttState("pending_in");
                   setLogs([]);
-                  setHasCheckedIn(false);
-                  setActiveShiftId(null);
-                }
-              }}
-            >
-              <option value="normal">Normal Out (Chuẩn)</option>
-              <option value="late_out">Late Out (&gt;15p)</option>
-              <option value="forgot_in">Forgot IN -&gt; OUT</option>
-              <option value="forgot_out">Forgot OUT (Auto Close)</option>
-              <option value="missing_checkout">
-                Missing Checkout (Auto-close)
-              </option>
-            </select>
+                }}
+              >
+                <option value="morning">Ca Sáng (08:00 - 15:00 · Checklist Mở)</option>
+                <option value="night">Ca Tối (15:00 - 22:00 · Checklist Đóng)</option>
+              </select>
+            </div>
           </div>
-          <button
-            onClick={() => setInZone(!inZone)}
-            className={cn(
-              "w-full py-2.5 rounded-lg text-xs font-bold transition-all border",
-              inZone
-                ? "border-green-200 text-green-700 bg-green-50 hover:bg-green-100"
-                : "border-red-200 text-red-600 bg-red-50 hover:bg-red-100",
-            )}
-          >
-            Trạng thái GPS hiện tại:{" "}
-            {inZone ? "HỢP LỆ" : "NGOÀI VÙNG (Sẽ hiện form Ngoại lệ)"}
-          </button>
+
+          <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-100 text-center">
+            <button
+              onClick={() => setGpsStatus((p) => (p === "PASS" ? "FAIL" : "PASS"))}
+              className={cn(
+                "py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all flex items-center justify-center gap-1",
+                gpsStatus === "PASS"
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-red-50 text-red-600 border-red-200"
+              )}
+            >
+              GPS: {gpsStatus === "PASS" ? "✅ PASS" : "❌ FAIL"}
+            </button>
+            <button
+              onClick={() => setWifiStatus((p) => (p === "PASS" ? "FAIL" : "PASS"))}
+              className={cn(
+                "py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all flex items-center justify-center gap-1",
+                wifiStatus === "PASS"
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-red-50 text-red-600 border-red-200"
+              )}
+            >
+              Wi-Fi: {wifiStatus === "PASS" ? "✅ PASS" : "❌ FAIL"}
+            </button>
+            <button
+              onClick={() => setDeviceStatus((p) => (p === "PASS" ? "FAIL" : "PASS"))}
+              className={cn(
+                "py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all flex items-center justify-center gap-1",
+                deviceStatus === "PASS"
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-red-50 text-red-600 border-red-200"
+              )}
+            >
+              Thiết bị: {deviceStatus === "PASS" ? "✅ PASS" : "❌ FAIL"}
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* SCENARIO ALERTS */}
-      <AnimatePresence>
-        {(scenario === "forgot_in" || scenario === "forgot_out") && (
+      <div className="px-4 py-2" id="attendance-workspace">
+        {/* Header */}
+        <div className="flex justify-between items-end mb-4 mt-2">
+          <div>
+            <h1 className="text-2xl font-bold font-display text-slate-900 tracking-tight">
+              Chấm công
+            </h1>
+            <p className="text-xs text-slate-500 font-medium mt-0.5">
+              Ghi nhận ca làm việc & điều kiện bảo mật
+            </p>
+          </div>
+          <div className="text-right">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
+              Hôm nay
+            </span>
+            <span className="text-sm font-black text-slate-800">
+              {format(new Date(), "dd/MM/yyyy")}
+            </span>
+          </div>
+        </div>
+
+        {/* ==================================================== */}
+        {/* SECTION A: COMPACT SECURITY STATUS CARD */}
+        {/* ==================================================== */}
+        <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-card mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <div className={cn(
+                "w-7 h-7 rounded-lg flex items-center justify-center",
+                isSecurityValid ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
+              )}>
+                <Shield className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900 leading-tight">
+                  Điều kiện chấm công
+                </h4>
+                <p className="text-[10px] text-slate-400 font-medium">
+                  Xác thực 3 lớp độc lập
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={recheckSecurity}
+              disabled={isCheckingSecurity}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-all active:scale-95 disabled:opacity-50"
+            >
+              <RefreshCw
+                className={cn(
+                  "w-3.5 h-3.5",
+                  isCheckingSecurity && "animate-spin text-indigo-600"
+                )}
+              />
+              {isCheckingSecurity ? "Đang kiểm tra..." : "Kiểm tra lại"}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {/* GPS */}
+            <div
+              className={cn(
+                "p-2.5 rounded-xl border flex flex-col justify-between transition-all",
+                gpsStatus === "PASS"
+                  ? "bg-slate-50/60 border-slate-100"
+                  : "bg-red-50/50 border-red-200"
+              )}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5 text-slate-400" /> GPS
+                </span>
+                {gpsStatus === "PASS" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5 text-red-600" />
+                )}
+              </div>
+              <span
+                className={cn(
+                  "text-[10px] font-extrabold uppercase tracking-wide",
+                  gpsStatus === "PASS" ? "text-emerald-700" : "text-red-700"
+                )}
+              >
+                {gpsStatus === "PASS" ? "Hợp lệ" : "Không hợp lệ"}
+              </span>
+            </div>
+
+            {/* Wi-Fi/MAC */}
+            <div
+              className={cn(
+                "p-2.5 rounded-xl border flex flex-col justify-between transition-all",
+                wifiStatus === "PASS"
+                  ? "bg-slate-50/60 border-slate-100"
+                  : "bg-red-50/50 border-red-200"
+              )}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                  <Wifi className="w-3.5 h-3.5 text-slate-400" /> Wi-Fi/MAC
+                </span>
+                {wifiStatus === "PASS" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5 text-red-600" />
+                )}
+              </div>
+              <span
+                className={cn(
+                  "text-[10px] font-extrabold uppercase tracking-wide",
+                  wifiStatus === "PASS" ? "text-emerald-700" : "text-red-700"
+                )}
+              >
+                {wifiStatus === "PASS" ? "Hợp lệ" : "Không hợp lệ"}
+              </span>
+            </div>
+
+            {/* Device */}
+            <div
+              className={cn(
+                "p-2.5 rounded-xl border flex flex-col justify-between transition-all",
+                deviceStatus === "PASS"
+                  ? "bg-slate-50/60 border-slate-100"
+                  : "bg-red-50/50 border-red-200"
+              )}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                  <Smartphone className="w-3.5 h-3.5 text-slate-400" /> Thiết bị
+                </span>
+                {deviceStatus === "PASS" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5 text-red-600" />
+                )}
+              </div>
+              <span
+                className={cn(
+                  "text-[10px] font-extrabold uppercase tracking-wide",
+                  deviceStatus === "PASS" ? "text-emerald-700" : "text-red-700"
+                )}
+              >
+                {deviceStatus === "PASS" ? "Hợp lệ" : "Không hợp lệ"}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-medium">
+            <span>Kiểm tra lần cuối: {lastCheckedTime}</span>
+            <span
+              className={cn(
+                "font-bold",
+                isSecurityValid ? "text-emerald-600" : "text-red-600"
+              )}
+            >
+              {isSecurityValid ? "Đủ điều kiện chấm công (3/3)" : "Phát hiện lỗi bảo mật"}
+            </span>
+          </div>
+        </div>
+
+        {/* ==================================================== */}
+        {/* SECTION B: SECURITY FAIL UI & TICKET CREATION CTAs */}
+        {/* ==================================================== */}
+        {!isSecurityValid && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="bg-red-600 text-white sticky top-0 z-50 overflow-hidden shadow-md"
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-5 shadow-xs"
           >
-            <div className="p-3 pl-4 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <AlertTriangle className="w-5 h-5 shrink-0" />
+            <div className="flex items-start gap-3 mb-3">
+              <div className="w-8 h-8 rounded-xl bg-red-100 flex items-center justify-center shrink-0 text-red-600">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-red-900 uppercase tracking-wide">
+                  Không thể chấm công do điều kiện bảo mật chưa hợp lệ.
+                </h4>
+                <p className="text-[11px] text-red-700 mt-0.5 font-medium leading-relaxed">
+                  Vui lòng kiểm tra kết nối mạng hoặc gửi phiếu giải trình độc lập cho từng sự cố bảo mật dưới đây:
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-red-200/60">
+              {/* GPS Failure row */}
+              {gpsStatus === "FAIL" && (() => {
+                const existing = getExistingTicketForViolation("GPS");
+                return (
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-red-100">
+                    <div className="flex items-center gap-2">
+                      <MapPin className="w-3.5 h-3.5 text-red-500" />
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 block">Lỗi GPS / Vị trí</span>
+                        <span className="text-[10px] text-slate-400">Nằm ngoài bán kính cho phép của cửa hàng</span>
+                      </div>
+                    </div>
+                    {existing ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">
+                          Đã gửi phiếu — Chờ duyệt
+                        </span>
+                        <button
+                          onClick={() => setShowViewTicketModal(existing)}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 underline px-1"
+                        >
+                          Xem phiếu
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() =>
+                          setShowSecurityModal({
+                            open: true,
+                            violationType: "GPS",
+                            actionType: currentAction,
+                          })
+                        }
+                        className="text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-xl transition-all shadow-xs active:scale-95"
+                      >
+                        Tạo phiếu GPS
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Wi-Fi Failure row */}
+              {wifiStatus === "FAIL" && (() => {
+                const existing = getExistingTicketForViolation("WIFI");
+                return (
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-red-100">
+                    <div className="flex items-center gap-2">
+                      <Wifi className="w-3.5 h-3.5 text-red-500" />
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 block">Lỗi Wi-Fi / BSSID</span>
+                        <span className="text-[10px] text-slate-400">Chưa kết nối đúng mạng Wi-Fi đã đăng ký</span>
+                      </div>
+                    </div>
+                    {existing ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">
+                          Đã gửi phiếu — Chờ duyệt
+                        </span>
+                        <button
+                          onClick={() => setShowViewTicketModal(existing)}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 underline px-1"
+                        >
+                          Xem phiếu
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() =>
+                          setShowSecurityModal({
+                            open: true,
+                            violationType: "WIFI",
+                            actionType: currentAction,
+                          })
+                        }
+                        className="text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-xl transition-all shadow-xs active:scale-95"
+                      >
+                        Tạo phiếu Wi-Fi/MAC
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Device Failure row */}
+              {deviceStatus === "FAIL" && (() => {
+                const existing = getExistingTicketForViolation("DEVICE");
+                return (
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-red-100">
+                    <div className="flex items-center gap-2">
+                      <Smartphone className="w-3.5 h-3.5 text-red-500" />
+                      <div>
+                        <span className="text-xs font-bold text-slate-900 block">Lỗi Thiết bị chấm công</span>
+                        <span className="text-[10px] text-slate-400">Thiết bị không trùng khớp mã phần cứng đã duyệt</span>
+                      </div>
+                    </div>
+                    {existing ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">
+                          Đã gửi phiếu — Chờ duyệt
+                        </span>
+                        <button
+                          onClick={() => setShowViewTicketModal(existing)}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 underline px-1"
+                        >
+                          Xem phiếu
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() =>
+                          setShowSecurityModal({
+                            open: true,
+                            violationType: "DEVICE",
+                            actionType: currentAction,
+                          })
+                        }
+                        className="text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-xl transition-all shadow-xs active:scale-95"
+                      >
+                        Tạo phiếu thiết bị
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* SECTION C: EARLY CHECK-IN BANNERS */}
+        {/* ==================================================== */}
+        {scenario === "early_window" && isSecurityValid && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 mb-5 shadow-xs flex items-start gap-3"
+          >
+            <Info className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-xs font-bold text-indigo-950 uppercase tracking-wide">
+                Bạn đang Check-in sớm trong khung cho phép.
+              </h4>
+              <p className="text-[11px] text-indigo-800 mt-0.5 font-medium leading-relaxed">
+                Giờ bấm thực tế sẽ được ghi nhận; giờ tính công mặc định bắt đầu từ giờ chuẩn của ca ({currentShift?.timeStr.split(" - ")[0] || "08:00"}).
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {scenario === "early_beyond" && isSecurityValid && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-5 shadow-xs flex items-start gap-3"
+          >
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-xs font-bold text-amber-950 uppercase tracking-wide">
+                Bạn đang Check-in sớm hơn khung cho phép.
+              </h4>
+              <p className="text-[11px] text-amber-800 mt-0.5 font-medium leading-relaxed">
+                Nếu điều kiện bảo mật hợp lệ, hệ thống vẫn ghi nhận Check-in và tạo <span className="font-bold">Early Check-In Exception</span> gửi Quản lý phê duyệt.
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* SECTION E & G: MISSING CHECK-IN & MISSING BOTH CARDS */}
+        {/* ==================================================== */}
+        {/* 1. Missing Check-In (Pending Explanation or Explained) */}
+        {(scenario === "missing_in_created" ||
+          scenario === "missing_in_explained" ||
+          scenario === "return_missing_in" ||
+          activeMissingInTicket) && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={cn(
+              "rounded-2xl p-4 mb-5 border shadow-card",
+              activeMissingInTicket?.isExplained || scenario === "missing_in_explained"
+                ? "bg-amber-50/70 border-amber-200"
+                : "bg-red-50/70 border-red-200"
+            )}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div
+                  className={cn(
+                    "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-xs",
+                    activeMissingInTicket?.isExplained || scenario === "missing_in_explained"
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-red-100 text-red-600"
+                  )}
+                >
+                  <Clock className="w-5 h-5" />
+                </div>
                 <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wide">
-                    Hành động bắt buộc
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                    {activeMissingInTicket?.isExplained || scenario === "missing_in_explained"
+                      ? "Đã giải trình – Chờ kết thúc ca"
+                      : `Bạn chưa Check-in cho ca ${currentShift?.timeStr || "08:00 – 15:00"}`}
                   </h4>
-                  <p className="text-[11px] text-red-100 font-medium">
-                    Bạn có ca làm việc lỗi chưa giải quyết.
+                  <p className="text-[11px] text-slate-600 mt-1 font-medium leading-relaxed">
+                    {activeMissingInTicket?.isExplained || scenario === "missing_in_explained"
+                      ? "Bạn có thể thực hiện Check-in lại bất cứ lúc nào nếu ca làm việc vẫn đang diễn ra."
+                      : "Hệ thống tự động ghi nhận sự cố Missing Check-in. Vui lòng gửi giải trình lý do chưa vào ca."}
                   </p>
                 </div>
               </div>
+
+              {!(activeMissingInTicket?.isExplained || scenario === "missing_in_explained") && (
+                <button
+                  onClick={() => setShowMissingInExplanationModal(true)}
+                  className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition-all shadow-xs shrink-0 active:scale-95 uppercase tracking-wider"
+                >
+                  Giải trình
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* 2. Missing Both (Shift Ended without Punches) */}
+        {(scenario === "missing_both_ended" || activeMissingBothTicket) && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-slate-900 text-white rounded-2xl p-5 mb-5 shadow-lg border border-slate-800"
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-red-500/20 border border-red-500/40 flex items-center justify-center shrink-0 text-red-400">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] font-black uppercase tracking-widest bg-red-500 text-white px-2 py-0.5 rounded">
+                    Missing Both
+                  </span>
+                  <span className="text-xs text-slate-300 font-medium">Ca 08:00 – 15:00</span>
+                </div>
+                <h4 className="text-sm font-bold text-white tracking-tight">
+                  Ca đã kết thúc — Chờ quản lý xác minh
+                </h4>
+                <p className="text-xs text-slate-400 mt-1 font-medium leading-relaxed">
+                  Ca làm việc đã quá giờ kết thúc mà không có dữ liệu Check-in và Check-out hợp lệ. Hồ sơ đã được chuyển tới Action Center / Yêu cầu.
+                </p>
+                <div className="mt-3 pt-3 border-t border-slate-800 flex justify-between items-center">
+                  <span className="text-[11px] text-slate-400">Trạng thái: Chờ Quản lý xác minh</span>
+                  <button
+                    onClick={() => navigate("/requests")}
+                    className="text-xs font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                  >
+                    Xem trong Action Center <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* SECTION J: SANDWICH HANDSHAKE CARD (A → B → A) */}
+        {/* ==================================================== */}
+        {currentShift?.requireHandshake && currentShift.isSandwichHandshake && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-gradient-to-br from-indigo-900 to-slate-900 text-white rounded-3xl p-5 mb-6 shadow-xl border border-indigo-500/30 relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div className="flex items-center justify-between mb-4 relative z-10">
+              <span className="text-[10px] font-black bg-indigo-500 text-white px-2.5 py-1 rounded-lg uppercase tracking-widest shadow-xs">
+                Yêu cầu điều động
+              </span>
+              <span className="text-xs text-indigo-200 font-bold">
+                {currentShift.timeStr}
+              </span>
+            </div>
+
+            <h3 className="text-lg font-black tracking-tight text-white mb-2 relative z-10">
+              Điều động kẹp ca A → B → A
+            </h3>
+            <p className="text-xs text-slate-300 font-medium leading-relaxed mb-5 relative z-10">
+              Bạn được quản lý phân công hỗ trợ chi nhánh khác trong ca làm việc. Vui lòng xác nhận lịch trình:
+            </p>
+
+            {/* Sandwich 3 steps visual */}
+            <div className="space-y-2.5 mb-6 relative z-10 bg-white/5 p-3.5 rounded-2xl border border-white/10">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Ca gốc (Store A):
+                </span>
+                <span className="font-bold text-white">HMK Nguyễn Trãi · 08:00 – 11:00</span>
+              </div>
+              <div className="flex items-center justify-between text-xs py-1.5 border-y border-white/10">
+                <span className="font-bold text-indigo-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span> Hỗ trợ (Store B):
+                </span>
+                <span className="font-bold text-white">HMK Cầu Giấy · 11:00 – 15:00</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-amber-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-400"></span> Quay lại (Store A):
+                </span>
+                <span className="font-bold text-white">HMK Nguyễn Trãi · 15:00 – 18:00</span>
+              </div>
+            </div>
+
+            <div className="flex gap-3 relative z-10">
               <button
-                onClick={() => navigate("/requests")}
-                className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-[11px] font-bold uppercase tracking-widest whitespace-nowrap active:scale-95 transition-all"
+                onClick={() => {
+                  rejectSandwichHandshake(currentShift.id);
+                  setToast({
+                    message: "Đã từ chối điều động kẹp ca",
+                    type: "info",
+                  });
+                }}
+                className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl text-xs transition-all uppercase tracking-wider active:scale-95"
               >
-                Xử lý
+                Từ chối
+              </button>
+              <button
+                onClick={() => {
+                  acceptSandwichHandshake(currentShift.id);
+                  setToast({
+                    message: "Đã đồng ý điều động kẹp ca A → B → A",
+                    subMessage: "Lịch làm việc đã được tách thành 3 ca độc lập.",
+                    type: "success",
+                  });
+                }}
+                className="flex-[2] py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-xl text-xs transition-all shadow-lg active:scale-95 flex items-center justify-center gap-2 uppercase tracking-wider"
+              >
+                <Check className="w-4 h-4" /> Đồng ý nhận ca
               </button>
             </div>
           </motion.div>
         )}
-      </AnimatePresence>
 
-      <div className="px-4 py-2" id="attendance-workspace">
-        <h1 className="text-2xl font-bold font-display text-slate-900 mb-6 mt-4 tracking-tight">
-          Chấm công
-        </h1>
-
-        {/* Lịch làm việc hôm nay */}
+        {/* ==================================================== */}
+        {/* SHIFTS LIST (WHEN MULTIPLE SHIFTS TODAY) */}
+        {/* ==================================================== */}
         {!activeShiftId && (
-          <div className="mb-8">
-            {todayShifts.length > 0 && (
-              <h2 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
-                <CalendarDays className="w-4 h-4" /> Lịch làm việc hôm nay
-              </h2>
-            )}
-            <div className="space-y-4">
+          <div className="mb-6">
+            <h2 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
+              <CalendarDays className="w-4 h-4" /> Danh sách ca hôm nay
+            </h2>
+
+            <div className="space-y-3">
               {todayShifts.map((shift) => (
                 <div
                   key={shift.id}
                   className={cn(
-                    "p-5 rounded-2xl border transition-all relative overflow-hidden",
-                    shift.requireHandshake
-                      ? "bg-gradient-to-br from-indigo-50 to-white border-indigo-100 shadow-soft"
-                      : "bg-white border-slate-100 hover:border-slate-200 shadow-card",
+                    "p-4 rounded-2xl border transition-all relative overflow-hidden bg-white shadow-card",
+                    shift.isReturnShift
+                      ? "border-amber-200 bg-amber-50/20"
+                      : shift.isSupportShift
+                      ? "border-indigo-200 bg-indigo-50/20"
+                      : "border-slate-100"
                   )}
                 >
-                  {shift.requireHandshake && (
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
-                  )}
-                  <div className="flex justify-between items-start mb-4 relative z-10 w-full">
-                    <div className="flex-1">
-                      <p className="font-display text-2xl font-black text-slate-900 tracking-tight">
-                        {shift.timeStr}
-                      </p>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">{shift.hours}h</span>
-                        <span className="text-slate-200 text-[10px]">•</span>
-                        <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">{(shift.date instanceof Date ? format(shift.date, "dd/MM") : "")}</span>
-                      </div>
-                    </div>
-                    <div className="text-right flex-1 flex flex-col items-end">
-                      <div className="flex flex-col items-end gap-1.5">
-                        {shift.requireHandshake && (
-                          <span className="text-[8px] font-black bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded uppercase tracking-widest border border-indigo-200">
-                            Điều phối mới
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-display text-xl font-black text-slate-900">
+                          {shift.timeStr}
+                        </span>
+                        {shift.isSupportShift && (
+                          <span className="text-[9px] font-black bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider border border-indigo-200">
+                            HỖ TRỢ
                           </span>
                         )}
-                        <h3 className="font-bold text-sm tracking-tight text-slate-900">
-                          {shift.shiftName}
-                        </h3>
+                        {shift.isReturnShift && (
+                          <span className="text-[9px] font-black bg-amber-100 text-amber-800 px-2 py-0.5 rounded uppercase tracking-wider border border-amber-200">
+                            CA QUAY LẠI
+                          </span>
+                        )}
                       </div>
-                      <span className="text-[10px] font-bold text-slate-400 mt-1 max-w-full truncate uppercase tracking-widest">
-                        {shift.storeName || "Home Store"}
-                      </span>
+                      <p className="text-xs font-bold text-slate-600 mt-0.5">
+                        {shift.shiftName} · {shift.storeName}
+                      </p>
                     </div>
+
+                    <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-md">
+                      {shift.hours} giờ
+                    </span>
                   </div>
 
-                  {shift.requireHandshake ? (
-                    <div className="mt-4 pt-4 border-t border-dashed border-indigo-100 relative z-10">
-                      <div className="flex items-start gap-3 mb-4">
-                        <div className="w-10 h-10 rounded-xl bg-white border border-indigo-100 flex items-center justify-center shrink-0 shadow-soft">
-                          <AlertTriangle className="w-5 h-5 text-indigo-600" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-extrabold text-indigo-900 uppercase tracking-widest leading-tight mb-1">
-                            Đã thay đổi địa điểm ca
-                          </p>
-                          <p className="text-[11px] text-slate-500 font-medium leading-relaxed pr-2">
-                            Quản lý vừa điều phối bạn tới <span className="text-slate-900 font-bold">{shift.storeName}</span>. 
-                            Vui lòng xác nhận để tiếp tục.
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => acknowledgeDispatch(shift.id)}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl text-xs transition-all shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 uppercase tracking-widest"
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Xác nhận & Mở ca
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="mt-4 flex gap-2">
-                      <button
-                        onClick={() => {
-                          setActiveShiftId(shift.id);
-                          setShiftType(
-                            shift.shiftName.includes("Sáng")
-                              ? "morning"
-                              : "night",
-                          );
-                          setAttState("checking_location");
-                          setTimeout(() => {
-                            if (!inZone) {
-                              setShowGpsModal(true);
-                              setAttState("pending_in");
-                            } else {
-                              setAttState("pending_in");
-                            }
-                          }, 2500);
-                        }}
-                        className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl text-xs transition-all shadow-lg active:scale-[0.98] uppercase tracking-widest"
-                      >
-                        Vào làm ngay
-                      </button>
-                    </div>
-                  )}
+                  <button
+                    onClick={() => {
+                      setActiveShiftId(shift.id);
+                      setShiftType(
+                        shift.shiftName.includes("Tối") || shift.shiftName.includes("Đêm")
+                          ? "night"
+                          : "morning"
+                      );
+                      setAttState("pending_in");
+                    }}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  >
+                    Vào chấm công ca này <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               ))}
             </div>
-
-            <button
-              onClick={() => setShowAdhocModal(true)}
-              className="w-full mt-6 border-2 border-dashed border-slate-200 bg-white py-5 rounded-2xl text-slate-500 font-bold uppercase tracking-[0.1em] text-[11px] hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-3 shadow-soft group"
-            >
-              <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center border border-slate-100 group-hover:scale-110 transition-transform">
-                <MapPin className="w-5 h-5 text-slate-400" />
-              </div>
-              <div className="text-left">
-                <p className="text-slate-900 leading-tight">Chấm công đột xuất</p>
-                <p className="text-[10px] text-slate-400 font-medium normal-case tracking-normal">Dành cho trường hợp chưa có lịch trên hệ thống</p>
-              </div>
-            </button>
           </div>
         )}
 
-        {/* Main Card */}
+        {/* Back button if a shift is selected */}
         {activeShiftId && (
-          <div className="mb-4 flex items-center gap-2">
+          <div className="mb-3 flex items-center justify-between">
             <button
               onClick={() => setActiveShiftId(null)}
-              className="text-xs font-bold text-gray-500 hover:text-gray-900 uppercase tracking-wide flex items-center gap-1 transition-colors"
+              className="text-xs font-bold text-slate-500 hover:text-slate-900 uppercase tracking-wide flex items-center gap-1 transition-colors"
             >
-              <ChevronRight className="w-4 h-4 rotate-180" /> Quay lại danh sách
-              ca
+              <ChevronRight className="w-4 h-4 rotate-180" /> Xem tất cả ca hôm nay
             </button>
+
+            {currentShift?.isReturnShift && (
+              <span className="text-[10px] font-black bg-amber-100 text-amber-800 px-2.5 py-1 rounded-lg uppercase tracking-wider border border-amber-200">
+                Ca quay lại — Store A
+              </span>
+            )}
           </div>
         )}
 
-        <AnimatePresence mode="popLayout">
-          {(!todayShifts.length || activeShiftId) && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="bg-white rounded-xl shadow-sm border-2 border-gray-100 overflow-hidden relative"
-            >
-              {/* Card Header */}
-              <div className="bg-slate-50 p-6 flex justify-between items-start border-b border-slate-100">
-                <div>
-                  <h2 className="font-bold text-slate-900 text-[15px] tracking-tight">
-                    {activeShiftId
-                      ? todayShifts.find((s) => s.id === activeShiftId)
-                          ?.shiftName
-                      : shiftType === "morning"
-                        ? "Ca Sáng"
-                        : "Ca Tối"}
-                    {" - "}
-                    {activeShiftId
-                      ? todayShifts.find((s) => s.id === activeShiftId)
-                          ?.storeName
-                      : "HMK Nguyễn Trãi"}
-                  </h2>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-white border border-slate-100 px-2 py-0.5 rounded-md uppercase tracking-wider">
-                      <Clock className="w-3 h-3" />
-                      {activeShiftId
-                        ? todayShifts.find((s) => s.id === activeShiftId)?.timeStr
-                        : shiftType === "morning"
-                          ? "08:00 - 15:00"
-                          : "15:00 - 22:00"}
-                    </div>
+        {/* ==================================================== */}
+        {/* MAIN PUNCH WORKSPACE CARD */}
+        {/* ==================================================== */}
+        {scenario !== "missing_both_ended" && (
+          <div className="bg-white rounded-3xl shadow-card border border-slate-200 overflow-hidden relative mb-6">
+            {/* Card Header */}
+            <div className="bg-slate-50/80 p-5 flex justify-between items-start border-b border-slate-100">
+              <div>
+                <h2 className="font-bold text-slate-900 text-base tracking-tight flex items-center gap-2">
+                  {currentShift?.shiftName || "Ca Sáng"}
+                  {" · "}
+                  <span className="text-slate-600 font-semibold">
+                    {currentShift?.storeName || "HMK Nguyễn Trãi"}
+                  </span>
+                </h2>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <div className="flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-white border border-slate-200 px-2.5 py-0.5 rounded-lg font-mono">
+                    <Clock className="w-3 h-3 text-slate-400" />
+                    {currentShift?.timeStr || "08:00 - 15:00"}
                   </div>
+                  {currentShift?.isReturnShift && (
+                    <span className="text-[9px] font-black bg-amber-100 text-amber-800 px-2 py-0.5 rounded uppercase tracking-wider">
+                      Store A (Nguyễn Trãi)
+                    </span>
+                  )}
                 </div>
-                  <div className="flex flex-col items-end gap-2">
-                    {attState !== "checking_location" && (
-                      <div
+              </div>
+
+              <div className="text-right">
+                <span
+                  className={cn(
+                    "text-[10px] px-2.5 py-1 rounded-lg font-bold uppercase tracking-wider border block text-center",
+                    attState === "working"
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-slate-100 text-slate-700 border-slate-200"
+                  )}
+                >
+                  {attState === "working" ? "Đang trong ca" : "Chưa vào ca"}
+                </span>
+              </div>
+            </div>
+
+            {/* Time Display & Punch Control */}
+            <div className="p-8 flex flex-col items-center justify-center min-h-[260px] relative">
+              <h3 className="text-4xl font-display tracking-tight font-black text-slate-900 mb-8 font-mono">
+                {time instanceof Date ? format(time, "HH:mm:ss") : "00:00:00"}
+              </h3>
+
+              <AnimatePresence mode="wait">
+                {/* --- STATE: PENDING IN (CHECK-IN) --- */}
+                {attState === "pending_in" && (
+                  <motion.div
+                    key="in-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="flex flex-col items-center"
+                  >
+                    <div
+                      className={cn(
+                        "relative flex items-center justify-center w-40 h-40 group cursor-pointer select-none",
+                        !isSecurityValid && "cursor-not-allowed opacity-80"
+                      )}
+                      onPointerDown={() => {
+                        if (!isSecurityValid) {
+                          setToast({
+                            message: "Không thể chấm công do điều kiện bảo mật chưa hợp lệ.",
+                            type: "error",
+                          });
+                        } else if (isMissingInUnexplained) {
+                          setToast({
+                            message: "Vui lòng gửi giải trình Missing Check-In trước khi tiếp tục Check-in.",
+                            type: "error",
+                          });
+                        } else {
+                          startHoldAction(handleCheckInAttempt);
+                        }
+                      }}
+                      onPointerUp={cancelHold}
+                      onPointerLeave={cancelHold}
+                      onContextMenu={(e) => e.preventDefault()}
+                      style={{ touchAction: "none" }}
+                    >
+                      {/* Outline circle */}
+                      <svg className="absolute inset-0 w-full h-full transform -rotate-90 pointer-events-none">
+                        <circle
+                          cx="80"
+                          cy="80"
+                          r="72"
+                          className="stroke-slate-100"
+                          strokeWidth="8"
+                          fill="none"
+                        />
+                        {/* Hold Progress Circle */}
+                        <circle
+                          cx="80"
+                          cy="80"
+                          r="72"
+                          className={cn(
+                            "transition-all duration-75",
+                            !isSecurityValid ? "stroke-red-500" : isMissingInUnexplained ? "stroke-amber-500" : "stroke-slate-900"
+                          )}
+                          strokeWidth="8"
+                          fill="none"
+                          strokeDasharray="452.39"
+                          strokeDashoffset={
+                            452.39 - (452.39 * holdProgress) / 100
+                          }
+                          strokeLinecap="round"
+                        />
+                      </svg>
+
+                      {/* Fingerprint Button */}
+                      <button
                         className={cn(
-                          "text-[9px] px-2.5 py-1 rounded-lg font-extrabold uppercase tracking-widest border",
-                          inZone
-                            ? "bg-green-50 text-green-700 border-green-200"
-                            : "bg-red-50 text-red-600 border-red-200 shadow-soft shadow-red-100",
+                          "w-32 h-32 rounded-full flex flex-col items-center justify-center text-white transition-all duration-300 pointer-events-none relative overflow-hidden shadow-xl",
+                          !isSecurityValid
+                            ? "bg-red-500 shadow-red-200"
+                            : isMissingInUnexplained
+                            ? "bg-amber-600 shadow-amber-200"
+                            : "bg-slate-900 shadow-slate-200",
+                          holdProgress > 0 ? "scale-90" : "group-hover:scale-105"
                         )}
                       >
-                        {inZone ? "GPS Hợp lệ" : "Sai Vị trí"}
-                      </div>
-                    )}
-                    {activeShiftId?.startsWith("adhoc_") &&
-                      attState === "pending_in" && (
-                        <button
-                          onClick={() => setShowAdhocModal(true)}
-                          className="text-[9px] bg-slate-900 text-white px-2.5 py-1 rounded-lg uppercase tracking-widest font-extrabold shadow-lg shadow-slate-200 hover:bg-slate-800 transition-colors"
-                        >
-                          Sửa thông tin
-                        </button>
-                      )}
-                    {attState === "pending_in" && scenario === "forgot_in" && (
-                    <span className="text-[9px] bg-red-600 text-white border border-red-700 font-extrabold px-2.5 py-1 rounded-lg uppercase tracking-widest shadow-lg shadow-red-500/20">
-                      [QUÊN CHECK-IN]
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="p-8 flex flex-col items-center justify-center min-h-[260px] relative">
-                <div className="absolute top-0 left-0 w-full h-1 bg-slate-50 ring-inset ring-slate-100/50"></div>
-                <h3 className="text-4xl font-display tracking-tight font-black text-slate-900 mb-10">
-                  {time instanceof Date ? format(time, "HH:mm:ss") : "00:00:00"}
-                </h3>
-
-                <AnimatePresence mode="wait">
-                  {/* --- STATE: CHECKING LOCATION --- */}
-                  {attState === "checking_location" && (
-                    <motion.div
-                      key="checking"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="flex flex-col items-center justify-center space-y-4"
-                    >
-                      <div className="relative w-24 h-24 flex items-center justify-center">
-                        <motion.div
-                          className="absolute inset-0 border-4 border-indigo-200 rounded-full"
-                          animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
-                          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                        />
-                        <motion.div
-                          className="absolute inset-0 border-4 border-indigo-400 rounded-full"
-                          animate={{ scale: [1, 1.2, 1], opacity: [0.8, 0, 0.8] }}
-                          transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut", delay: 0.2 }}
-                        />
-                        <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center z-10 border-2 border-indigo-300">
-                          <MapPin className="w-6 h-6 text-indigo-600 animate-pulse" />
-                        </div>
-                      </div>
-                      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest animate-pulse">
-                        Đang kiểm tra vị trí GPS...
-                      </p>
-                    </motion.div>
-                  )}
-
-                  {/* --- STATE: PENDING IN --- */}
-                  {(attState === "pending_in" ||
-                    (attState === "done" && scenario === "forgot_in")) && (
-                    <motion.div
-                      key="in"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="flex flex-col items-center"
-                    >
-                      {attState !== "done" ? (
-                        <>
-                          <div
-                            className={cn(
-                              "relative flex items-center justify-center w-40 h-40 group cursor-pointer",
-                              (scenario === "forgot_in" ||
-                                scenario === "forgot_out") &&
-                                "grayscale opacity-90",
-                            )}
-                            onPointerDown={() =>
-                              startHoldAction(handleCheckInAttempt)
-                            }
-                            onPointerUp={cancelHold}
-                            onPointerLeave={cancelHold}
-                            onContextMenu={(e) => e.preventDefault()}
-                            style={{ touchAction: "none" }}
-                          >
-                            {/* Background Outline */}
-                            <svg className="absolute inset-0 w-full h-full transform -rotate-90 pointer-events-none transition-transform duration-300">
-                              <circle
-                                cx="80"
-                                cy="80"
-                                r="72"
-                                className="stroke-slate-100"
-                                strokeWidth="8"
-                                fill="none"
-                              />
-                              {/* Progress Outline */}
-                              <circle
-                                cx="80"
-                                cy="80"
-                                r="72"
-                                className="stroke-slate-900 transition-all duration-75"
-                                strokeWidth="8"
-                                fill="none"
-                                strokeDasharray="452.39"
-                                strokeDashoffset={
-                                  452.39 - (452.39 * holdProgress) / 100
-                                }
-                                strokeLinecap="round"
-                              />
-                            </svg>
-
-                            <button
-                              className={cn(
-                                "w-32 h-32 rounded-full flex flex-col items-center justify-center text-white transition-all duration-300 pointer-events-none relative overflow-hidden",
-                                scenario === "forgot_in" ||
-                                  scenario === "forgot_out"
-                                  ? "bg-red-500 shadow-lg shadow-red-200"
-                                  : "bg-slate-900 shadow-xl shadow-slate-200",
-                                holdProgress > 0
-                                  ? "scale-90"
-                                  : "group-hover:scale-105",
-                              )}
-                            >
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent"></div>
-                              <AnimatePresence mode="wait">
-                                {holdProgress > 0 && (
-                                  <motion.div 
-                                    initial={{ opacity: 0 }}
-                                    animate={{ opacity: 1 }}
-                                    className="absolute inset-0 bg-white/10"
-                                  />
-                                )}
-                              </AnimatePresence>
-                              
-                              {scenario === "forgot_in" ||
-                              scenario === "forgot_out" ? (
-                                <Lock
-                                  className={cn(
-                                    "w-10 h-10 mb-2 transition-all duration-75 relative z-10",
-                                    holdProgress > 0
-                                      ? "scale-110"
-                                      : "opacity-100",
-                                  )}
-                                />
-                              ) : (
-                                <Fingerprint
-                                  className={cn(
-                                    "w-10 h-10 mb-2 transition-all duration-200 relative z-10",
-                                    holdProgress > 0
-                                      ? "scale-110"
-                                      : "opacity-100",
-                                  )}
-                                />
-                              )}
-                              <span className="font-extrabold tracking-[0.2em] text-[10px] uppercase relative z-10">
-                                {scenario === "forgot_in" ||
-                                scenario === "forgot_out"
-                                  ? "BỊ KHÓA"
-                                  : "CHECK-IN"}
-                              </span>
-                            </button>
-                          </div>
-
-                          <div className="mt-8 flex flex-col items-center gap-3">
-                            {scenario === "forgot_in" ||
-                            scenario === "forgot_out" ? (
-                              <div className="flex flex-col items-center gap-2">
-                                <span className="bg-red-50 text-red-600 px-3 py-1 rounded-lg uppercase text-[10px] font-bold tracking-widest border border-red-100">
-                                  Hành động chưa xử lý
-                                </span>
-                                <p className="text-[11px] text-slate-400 font-medium">Bấm vào thanh thông báo phía trên</p>
-                              </div>
-                            ) : (
-                              <div className="flex flex-col items-center gap-2">
-                                <div className="flex items-center gap-2 bg-slate-50 border border-slate-100 px-3 py-1 rounded-full">
-                                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                                  <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">
-                                    Sẵn sàng vào ca
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-slate-400 font-medium">Ấn và giữ để quét vân tay</p>
-                              </div>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="text-center p-5 bg-gray-50 rounded-xl border border-gray-100">
-                          <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
-                          <h4 className="font-bold text-gray-900">
-                            Ca làm việc đã kết thúc
-                          </h4>
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-
-                  {/* --- STATE: CHECKLIST OPEN/CLOSE --- */}
-                  {(attState === "checklist_open" ||
-                    attState === "checklist_close") && (
-                    <motion.div
-                      key="checklist"
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0 }}
-                      className="w-full"
-                    >
-                      <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 mb-5 flex items-start gap-3">
-                        <Info className="w-5 h-5 text-orange-600 mt-0.5 shrink-0" />
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-orange-900 mb-1">
-                            {attState === "checklist_open"
-                              ? "Checklist Mở Ca"
-                              : "Checklist Đóng Ca"}
-                          </p>
-                          <p className="text-xs font-medium text-orange-800">
-                            {attState === "checklist_open"
-                              ? "Hoàn thành Checklist Mở ca để nhận Task công việc."
-                              : "Bắt buộc hoàn thành Checklist trước khi Check-out."}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 mb-8 relative">
-                        {[
-                          attState === "checklist_open"
-                            ? "Vệ sinh khu vực cửa hàng"
-                            : "Tắt toàn bộ hệ thống điện",
-                          attState === "checklist_open"
-                            ? "Kiểm đếm quỹ tiền mặt"
-                            : "Chốt bàn giao và khóa két",
-                          attState === "checklist_open"
-                            ? "Bật điều hòa và biển hiệu"
-                            : "Khóa cửa cuốn, niêm phong",
-                        ].map((task, i) => (
-                          <label
-                            key={i}
-                            className={cn(
-                              "flex items-center gap-4 p-4 border rounded-2xl cursor-pointer transition-all duration-200 group relative overflow-hidden",
-                              checks[i]
-                                ? "bg-slate-50 border-slate-200"
-                                : "bg-white border-slate-100 shadow-soft hover:border-slate-200"
-                            )}
-                          >
-                            <div className={cn(
-                              "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 shrink-0",
-                              checks[i] 
-                                ? "bg-slate-900 border-slate-900 scale-110 shadow-lg shadow-slate-200" 
-                                : "bg-white border-slate-200 group-hover:border-slate-400"
-                            )}>
-                              <CheckCircle2 className={cn(
-                                "w-4 h-4 text-white transition-all duration-300",
-                                checks[i] ? "scale-100 opacity-100" : "scale-50 opacity-0"
-                              )} />
-                            </div>
-                            <input
-                              type="checkbox"
-                              checked={checks[i]}
-                              onChange={() =>
-                                setChecks((p) => {
-                                  const n = [...p];
-                                  n[i] = !n[i];
-                                  return n;
-                                })
-                              }
-                              className="hidden"
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent"></div>
+                        <AnimatePresence mode="wait">
+                          {holdProgress > 0 && (
+                            <motion.div
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="absolute inset-0 bg-white/15"
                             />
-                            <span
-                              className={cn(
-                                "text-sm font-bold transition-all duration-300",
-                                checks[i]
-                                  ? "text-slate-400 font-medium"
-                                  : "text-slate-900",
-                              )}
-                            >
-                              {task}
-                            </span>
-                            {checks[i] && (
-                              <motion.div 
-                                initial={{ width: 0 }}
-                                animate={{ width: "100%" }}
-                                className="absolute bottom-0 left-0 h-0.5 bg-slate-900/10"
-                              />
-                            )}
-                          </label>
-                        ))}
-                      </div>
+                          )}
+                        </AnimatePresence>
+
+                        {!isSecurityValid ? (
+                          <Lock className="w-10 h-10 mb-1.5 relative z-10" />
+                        ) : isMissingInUnexplained ? (
+                          <AlertTriangle className="w-10 h-10 mb-1.5 relative z-10 text-amber-100" />
+                        ) : (
+                          <Fingerprint className="w-10 h-10 mb-1.5 relative z-10" />
+                        )}
+
+                        <span className="font-black tracking-[0.2em] text-[10px] uppercase relative z-10 text-center px-1">
+                          {!isSecurityValid ? "BỊ KHÓA" : isMissingInUnexplained ? "CẦN GIẢI TRÌNH" : "CHECK-IN"}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="mt-6 flex flex-col items-center gap-2">
+                      {!isSecurityValid ? (
+                        <div className="flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-full text-red-700 text-xs font-bold">
+                          <XCircle className="w-4 h-4" /> Điều kiện bảo mật chưa đạt
+                        </div>
+                      ) : isMissingInUnexplained ? (
+                        <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-3.5 py-1.5 rounded-full text-amber-800 text-xs font-bold">
+                          <AlertTriangle className="w-4 h-4 text-amber-600" /> Cần gửi giải trình Missing Check-In
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-1.5 rounded-full">
+                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                          <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                            Ấn & giữ 1 giây để quét vân tay
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* --- STATE: WORKING (CHECK-OUT) --- */}
+                {attState === "working" && (
+                  <motion.div
+                    key="working-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="flex flex-col items-center"
+                  >
+                    <div
+                      className={cn(
+                        "relative flex items-center justify-center w-40 h-40 group cursor-pointer select-none",
+                        !isSecurityValid && "cursor-not-allowed opacity-80"
+                      )}
+                      onPointerDown={() => {
+                        if (isSecurityValid) {
+                          startHoldAction(handleCheckOutAttempt);
+                        } else {
+                          setToast({
+                            message: "Không thể Check-out do điều kiện bảo mật chưa hợp lệ.",
+                            type: "error",
+                          });
+                        }
+                      }}
+                      onPointerUp={cancelHold}
+                      onPointerLeave={cancelHold}
+                      onContextMenu={(e) => e.preventDefault()}
+                      style={{ touchAction: "none" }}
+                    >
+                      <svg className="absolute inset-0 w-full h-full transform -rotate-90 pointer-events-none">
+                        <circle
+                          cx="80"
+                          cy="80"
+                          r="72"
+                          className="stroke-slate-100"
+                          strokeWidth="8"
+                          fill="none"
+                        />
+                        <circle
+                          cx="80"
+                          cy="80"
+                          r="72"
+                          className="stroke-amber-600 transition-all duration-75"
+                          strokeWidth="8"
+                          fill="none"
+                          strokeDasharray="452.39"
+                          strokeDashoffset={
+                            452.39 - (452.39 * holdProgress) / 100
+                          }
+                          strokeLinecap="round"
+                        />
+                      </svg>
 
                       <button
-                        disabled={!checks.every(Boolean)}
-                        onClick={() => {
-                          if (attState === "checklist_open")
-                            setAttState("working");
-                          else processFinalCheckOut();
-                        }}
-                        className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-2xl disabled:bg-slate-50 disabled:text-slate-300 disabled:border-slate-100 border border-transparent disabled:cursor-not-allowed transition-all shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 uppercase tracking-[0.15em]"
+                        className={cn(
+                          "w-32 h-32 rounded-full flex flex-col items-center justify-center text-white transition-all duration-300 pointer-events-none relative overflow-hidden shadow-xl bg-amber-600 shadow-amber-200",
+                          holdProgress > 0 ? "scale-90" : "group-hover:scale-105"
+                        )}
                       >
-                        {attState === "checklist_open"
-                          ? "Bắt đầu làm việc"
-                          : "Hoàn tất & Check-out"}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent"></div>
+                        <Fingerprint className="w-10 h-10 mb-1.5 relative z-10" />
+                        <span className="font-black tracking-[0.2em] text-[10px] uppercase relative z-10">
+                          CHECK-OUT
+                        </span>
                       </button>
-                    </motion.div>
-                  )}
+                    </div>
 
-                  {/* --- STATE: WORKING --- */}
-                  {attState === "working" && (
-                    <motion.div
-                      key="working"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="flex flex-col items-center"
-                    >
-                      <div className="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-5 relative z-0 border border-green-100">
-                        <div className="absolute inset-0 border-2 border-green-500 border-dashed rounded-full animate-spin-slow opacity-50 z-[-1]"></div>
-                        <Clock className="w-8 h-8 text-green-600" />
+                    <div className="mt-6 flex flex-col items-center gap-2">
+                      <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3.5 py-1.5 rounded-full">
+                        <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></div>
+                        <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">
+                          Ấn & giữ để kết thúc ca
+                        </span>
                       </div>
-                      <h3 className="font-bold text-xl text-gray-900 mb-1.5">
-                        Đang trong ca...
-                      </h3>
-                      <p className="text-xs font-bold text-gray-500 mb-8 uppercase tracking-wide">
-                        Bạn có thể thu nhỏ màn hình này
-                      </p>
+                    </div>
+                  </motion.div>
+                )}
 
-                      <div
-                        className="relative flex items-center justify-center w-40 h-40 group cursor-pointer"
-                        onPointerDown={() =>
-                          startHoldAction(handleCheckOutAttempt)
-                        }
-                        onPointerUp={cancelHold}
-                        onPointerLeave={cancelHold}
-                        onContextMenu={(e) => e.preventDefault()}
-                        style={{ touchAction: "none" }}
-                      >
-                        {/* Background Outline */}
-                        <svg className="absolute inset-0 w-full h-full transform -rotate-90 pointer-events-none drop-shadow-md">
-                          <circle
-                            cx="80"
-                            cy="80"
-                            r="76"
-                            className="stroke-gray-100"
-                            strokeWidth="6"
-                            fill="none"
-                          />
-                          {/* Progress Outline */}
-                          <circle
-                            cx="80"
-                            cy="80"
-                            r="76"
-                            className="transition-all duration-75 stroke-gray-800"
-                            strokeWidth="6"
-                            fill="none"
-                            strokeDasharray="478"
-                            strokeDashoffset={478 - (478 * holdProgress) / 100}
-                            strokeLinecap="round"
-                          />
-                        </svg>
+                {/* --- STATE: CHECKLIST OPEN/CLOSE --- */}
+                {(attState === "checklist_open" ||
+                  attState === "checklist_close") && (
+                  <motion.div
+                    key="checklist"
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="w-full"
+                  >
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 mb-5 flex items-start gap-3">
+                      <Info className="w-5 h-5 text-indigo-600 mt-0.5 shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-sm font-bold text-indigo-950 mb-0.5">
+                          {attState === "checklist_open"
+                            ? "Checklist Mở Ca Làm Việc"
+                            : "Checklist Đóng Ca & Bàn Giao"}
+                        </p>
+                        <p className="text-xs text-indigo-800 font-medium">
+                          {attState === "checklist_open"
+                            ? "Hoàn thành các hạng mục đầu ca trước khi nhận tác vụ."
+                            : "Kiểm tra an toàn cửa hàng trước khi hoàn tất Check-out."}
+                        </p>
+                      </div>
+                    </div>
 
-                        <button
+                    <div className="space-y-2.5 mb-6">
+                      {[
+                        attState === "checklist_open"
+                          ? "Vệ sinh khu vực quầy & tủ kính"
+                          : "Tắt toàn bộ hệ thống điều hòa & đèn",
+                        attState === "checklist_open"
+                          ? "Kiểm đếm tiền quỹ đầu ca"
+                          : "Chốt két & niêm phong doanh thu",
+                        attState === "checklist_open"
+                          ? "Khởi động hệ thống POS & Camera"
+                          : "Khóa cửa cuốn, kích hoạt báo động",
+                      ].map((task, i) => (
+                        <label
+                          key={i}
                           className={cn(
-                            "w-32 h-32 rounded-full flex flex-col items-center justify-center text-white transition-all duration-75 pointer-events-none bg-gray-900",
-                            holdProgress > 0
-                              ? "scale-95 shadow-none"
-                              : "group-hover:scale-[1.02]",
+                            "flex items-center gap-3 p-3.5 border rounded-xl cursor-pointer transition-all",
+                            checks[i]
+                              ? "bg-slate-50 border-slate-300"
+                              : "bg-white border-slate-200 hover:border-slate-300 shadow-xs"
                           )}
                         >
-                          <Fingerprint
+                          <div
                             className={cn(
-                              "w-10 h-10 mb-1 transition-all duration-75 text-gray-300",
-                              holdProgress > 0
-                                ? "scale-110 opacity-80"
-                                : "opacity-100",
+                              "w-5 h-5 rounded-md border flex items-center justify-center transition-all shrink-0",
+                              checks[i]
+                                ? "bg-slate-900 border-slate-900 text-white"
+                                : "bg-white border-slate-300"
                             )}
+                          >
+                            {checks[i] && <Check className="w-3.5 h-3.5" />}
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={checks[i]}
+                            onChange={() =>
+                              setChecks((p) => {
+                                const n = [...p];
+                                n[i] = !n[i];
+                                return n;
+                              })
+                            }
+                            className="hidden"
                           />
-                          <span className="font-bold tracking-widest text-sm text-white">
-                            CHECK-OUT
+                          <span
+                            className={cn(
+                              "text-xs font-bold transition-all",
+                              checks[i] ? "text-slate-400 line-through" : "text-slate-800"
+                            )}
+                          >
+                            {task}
                           </span>
-                        </button>
-                      </div>
-
-                      {/* VIRTUAL SHIFT COUNTDOWN */}
-                    {activeShiftId?.startsWith("adhoc_") ? (
-                      <div className="mt-6 mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-2xl relative overflow-hidden group">
-                        <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 rounded-full blur-xl -mr-8 -mt-8 pointer-events-none group-hover:scale-150 transition-transform duration-700"></div>
-                        <div className="flex items-center justify-between mb-3 relative z-10">
-                          <div className="flex items-center gap-2">
-                            <Clock className="w-5 h-5 text-indigo-600" />
-                            <span className="text-[11px] font-extrabold text-indigo-900 uppercase tracking-widest leading-none mt-0.5">Ca ảo đang chạy</span>
-                          </div>
-                          <span className="text-[9px] bg-indigo-100 text-indigo-700 font-extrabold px-2 py-1 rounded shadow-sm border border-indigo-200">GIỚI HẠN: 8H</span>
-                        </div>
-                        <div className="flex items-center gap-3 relative z-10 bg-white/50 p-2.5 rounded-xl border border-indigo-50 backdrop-blur-sm shadow-sm group-hover:bg-white/80 transition-colors">
-                          <div className="flex-1 bg-indigo-200/50 h-2 rounded-full overflow-hidden border border-indigo-100">
-                            <motion.div 
-                              initial={{ width: "0%" }}
-                              animate={{ width: "25%" }}
-                              transition={{ duration: 1, ease: "easeOut" }}
-                              className="bg-indigo-500 h-full rounded-full shadow-inner shadow-indigo-600/50"
-                            />
-                          </div>
-                          <span className="font-mono text-sm font-bold text-indigo-900 tracking-tight shrink-0 bg-white px-2 py-0.5 rounded shadow-sm">05:42:15</span>
-                        </div>
-                        <p className="text-[10px] text-indigo-600/80 mt-3 font-medium leading-relaxed relative z-10 flex items-start gap-1.5">
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                          <span>Hệ thống áp dụng Auto Check-out sau 8 tiếng đối với ca chưa có lịch để tránh gian lận giờ làm.</span>
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="mt-6 mb-6 p-4 bg-slate-50 border border-slate-200 rounded-2xl relative overflow-hidden group">
-                        <div className="absolute top-0 right-0 w-24 h-24 bg-slate-200/50 rounded-full blur-xl -mr-8 -mt-8 pointer-events-none group-hover:scale-150 transition-transform duration-700"></div>
-                        <div className="flex items-center justify-between mb-3 relative z-10">
-                          <div className="flex items-center gap-2 text-slate-700">
-                            <Clock className="w-4 h-4 text-slate-500" />
-                            <span className="text-[10px] font-extrabold uppercase tracking-widest leading-none mt-0.5">Thời gian thực</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 relative z-10 bg-white p-2.5 rounded-xl border border-slate-100 shadow-sm group-hover:shadow transition-shadow">
-                          <div className="flex-1 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                            <motion.div 
-                              initial={{ width: "0%" }}
-                              animate={{ width: "70%" }}
-                              transition={{ duration: 1, ease: "easeOut" }}
-                              className="bg-slate-400 h-full rounded-full"
-                            />
-                          </div>
-                          <span className="font-mono text-sm font-bold text-slate-800 tracking-tight shrink-0">05:42:15</span>
-                        </div>
-                        <p className="text-[10px] text-slate-500 mt-3 font-medium leading-relaxed relative z-10 flex items-start gap-1.5">
-                          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                          <span>Cảnh báo OT sau 90 phút (End_shift) và tự động đóng ca tại mốc 120 phút. Nếu bị bắt lỗi Missing_Checkout, bạn sẽ phải làm ticket báo cáo.</span>
-                        </p>
-                      </div>
-                    )}
-                    <p className="text-xs font-medium text-text-muted mt-6 flex flex-col items-center gap-1">
-                      <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded uppercase text-[10px] font-bold tracking-wider">
-                          Tan ca
-                        </span>
-                        Giữ 1 giây để kết thúc ca làm việc
-                      </p>
-                    </motion.div>
-                  )}
-
-                  {/* --- STATE: DONE --- */}
-                  {attState === "done" && scenario !== "forgot_in" && (
-                    <motion.div
-                      key="done"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="text-center w-full flex flex-col items-center"
-                    >
-                      <div className="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-5 border border-green-100">
-                        <CheckCircle2 className="w-10 h-10 text-green-600" />
-                      </div>
-                      <h3 className="text-xl font-bold text-gray-900 mb-2">
-                        Đã hoàn tất ca
-                      </h3>
-                      <p className="text-xs font-bold text-gray-500 bg-gray-50 p-4 rounded-xl border border-gray-100 w-full text-center">
-                        Dữ liệu đã được ghi nhận. Hẹn gặp lại!
-                      </p>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* --- LOGS --- */}
-        <div className="mt-8 mb-2">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-gray-900 text-sm uppercase tracking-wide">
-              Lịch sử hôm nay
-            </h3>
-            <Link
-              to="/timesheet"
-              className="text-[11px] font-bold text-gray-500 flex items-center hover:text-black uppercase tracking-wide"
-            >
-              Bảng công <ArrowRight className="w-3.5 h-3.5 ml-1" />
-            </Link>
-          </div>
-          <div className="space-y-3 relative">
-            {logs.length > 1 && (
-              <div className="absolute left-[1.125rem] top-6 bottom-6 w-0.5 bg-gray-100 -z-10"></div>
-            )}
-            <AnimatePresence>
-              {logs.map((log, i) => (
-                <motion.div
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  key={i}
-                  className="bg-white rounded-xl p-4 border-2 border-gray-100 shadow-sm flex items-start gap-4"
-                >
-                  <div
-                    className={cn(
-                      "w-10 h-10 rounded-full flex items-center justify-center shrink-0 border-2 border-white shadow-sm text-white",
-                      log.type === "in"
-                        ? "bg-black"
-                        : log.type === "out"
-                          ? "bg-gray-800"
-                          : "bg-orange-500",
-                    )}
-                  >
-                    {log.type === "in" || log.type === "exception" ? (
-                      <ArrowRight className="w-5 h-5" />
-                    ) : (
-                      <CheckCircle2 className="w-5 h-5" />
-                    )}
-                  </div>
-                  <div className="flex-1 mt-0.5">
-                    <div className="flex items-center gap-2">
-                      <p className="font-bold text-gray-900 text-sm">
-                        {log.type === "in"
-                          ? "Vào ca"
-                          : log.type === "out"
-                            ? "Tan ca"
-                            : "Ngoại lệ"}
-                      </p>
-                      {log.type === "exception" && (
-                        <span className="text-[9px] font-bold uppercase tracking-widest text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md">
-                          Chờ QC duyệt
-                        </span>
-                      )}
-                      <span className="font-mono text-gray-500 text-[11px] font-bold tracking-tight bg-gray-100 px-1.5 py-0.5 rounded">
-                        {log.time instanceof Date ? format(log.time, "HH:mm") : ""}
-                      </span>
+                        </label>
+                      ))}
                     </div>
-                    <p className="text-xs font-medium text-gray-500 mt-1">
-                      {log.note}
+
+                    <button
+                      disabled={!checks.every(Boolean)}
+                      onClick={() => {
+                        if (attState === "checklist_open") {
+                          setAttState("working");
+                          setToast({
+                            message: "Hoàn tất Checklist Mở ca! Bắt đầu tính công.",
+                            type: "success",
+                          });
+                        } else {
+                          processFinalCheckOut();
+                        }
+                      }}
+                      className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-98"
+                    >
+                      {attState === "checklist_open"
+                        ? "Xác nhận & Bắt đầu làm việc"
+                        : "Xác nhận & Hoàn tất Check-out"}
+                    </button>
+                  </motion.div>
+                )}
+
+                {/* --- STATE: DONE --- */}
+                {attState === "done" && (
+                  <motion.div
+                    key="done-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-center p-6 bg-slate-50 rounded-2xl border border-slate-100 w-full"
+                  >
+                    <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2.5" />
+                    <h4 className="font-bold text-slate-900 text-base">
+                      Ca làm việc đã kết thúc
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-1 font-medium">
+                      Dữ liệu chấm công đã được đồng bộ với hệ thống tính lương.
                     </p>
-                  </div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-            {logs.length === 0 && (
-              <p className="text-center text-xs font-bold text-gray-400 py-8 border-2 border-dashed border-gray-200 rounded-xl">
-                Chưa có dữ liệu lịch sử
-              </p>
-            )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Adhoc Shift Button */}
+        <button
+          onClick={() => setShowAdhocModal(true)}
+          className="w-full border-2 border-dashed border-slate-200 bg-white py-4 rounded-2xl text-slate-600 font-bold uppercase tracking-wider text-xs hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-3 shadow-xs"
+        >
+          <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600">
+            <MapPin className="w-4 h-4" />
+          </div>
+          <div className="text-left">
+            <p className="text-slate-900 text-xs font-bold leading-tight">Chấm công ca đột xuất</p>
+            <p className="text-[10px] text-slate-400 font-normal normal-case">Dành cho trường hợp hỗ trợ chưa có lịch trước</p>
+          </div>
+        </button>
+
+        {/* Attendance Activity Logs */}
+        {logs.length > 0 && (
+          <div className="mt-6">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+              Nhật ký bấm công hôm nay
+            </h3>
+            <div className="space-y-2">
+              {logs.map((log, idx) => (
+                <div
+                  key={idx}
+                  className="bg-white p-3 rounded-xl border border-slate-100 flex items-center justify-between text-xs shadow-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "w-2 h-2 rounded-full",
+                        log.type === "in"
+                          ? "bg-emerald-500"
+                          : log.type === "out"
+                          ? "bg-amber-500"
+                          : "bg-indigo-500"
+                      )}
+                    ></span>
+                    <span className="font-bold text-slate-800">{log.note}</span>
+                  </div>
+                  <span className="font-mono text-[11px] text-slate-400 font-medium">
+                    {format(log.time, "HH:mm:ss")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* =====================================================================
-          MODAL: LỖI GPS / VALIDATION EXCEPTION
-          ===================================================================== */}
+      {/* ==================================================== */}
+      {/* MODAL: SECURITY TICKET CREATION (GPS / WIFI / DEVICE) */}
+      {/* ==================================================== */}
       <AnimatePresence>
-        {showGpsModal && (
+        {showSecurityModal?.open && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1018,108 +1746,188 @@ export default function Attendance() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-gray-100 shadow-xl w-full max-w-sm m-4"
+              className="bg-white rounded-3xl p-6 border border-slate-100 shadow-2xl w-full max-w-sm m-4 relative overflow-hidden"
             >
-              <div className="bg-red-50 border border-red-100 p-3 rounded-xl inline-flex mb-4 text-red-600 shadow-sm">
-                <MapPin className="w-6 h-6" />
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center">
+                    <Shield className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">
+                      Tạo phiếu {showSecurityModal.violationType}
+                    </h3>
+                    <p className="text-[11px] text-red-600 font-bold uppercase tracking-wider">
+                      Giải trình vi phạm bảo mật
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowSecurityModal(null)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">
-                Lỗi xác thực vị trí
+
+              {/* Read-only Context */}
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-4 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Ca làm việc:</span>
+                  <span className="font-bold text-slate-900">
+                    {currentShift?.shiftName || "Ca Sáng"} ({currentShift?.timeStr || "08:00 - 15:00"})
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Địa điểm:</span>
+                  <span className="font-bold text-slate-900">
+                    {currentShift?.storeName || "HMK Nguyễn Trãi"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Thao tác:</span>
+                  <span className="font-bold text-slate-900">
+                    {showSecurityModal.actionType === "CHECK_IN" ? "Check-in" : "Check-out"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Loại sự cố:</span>
+                  <span className="font-bold text-red-600">
+                    {showSecurityModal.violationType === "GPS"
+                      ? "Lỗi Vị trí GPS"
+                      : showSecurityModal.violationType === "WIFI"
+                      ? "Lỗi Wi-Fi / MAC"
+                      : "Lỗi Thiết bị chấm công"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Editable Reason */}
+              <div className="mb-5">
+                <label className="block text-xs font-bold text-slate-800 mb-1.5 uppercase tracking-wide">
+                  Lý do giải trình <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  id="security-violation-reason"
+                  rows={3}
+                  placeholder="Mô tả chi tiết nguyên nhân (VD: Khu vực bị mất sóng GPS, Wi-Fi cửa hàng vừa đổi mật khẩu...)"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:border-slate-900 transition-all placeholder:text-slate-400"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setShowSecurityModal(null)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={() => {
+                    const reason =
+                      (
+                        document.getElementById(
+                          "security-violation-reason"
+                        ) as HTMLTextAreaElement
+                      )?.value || "Giải trình sự cố bảo mật chấm công";
+
+                    if (!currentShift) return;
+
+                    submitSecurityTicket({
+                      shift: currentShift,
+                      action: showSecurityModal.actionType,
+                      violationType: showSecurityModal.violationType,
+                      reason: reason,
+                    });
+
+                    setShowSecurityModal(null);
+                    setToast({
+                      message: "Đã gửi phiếu giải trình bảo mật",
+                      subMessage: "Phiếu đang chờ Quản lý cửa hàng phê duyệt.",
+                      type: "success",
+                    });
+                  }}
+                  className="flex-[2] py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-95"
+                >
+                  Gửi phiếu giải trình
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* MODAL: VIEW TICKET DETAILS (FOR EXISTING TICKETS) */}
+        {/* ==================================================== */}
+        {showViewTicketModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl p-6 border border-slate-100 shadow-2xl w-full max-w-sm m-4 relative overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono font-bold text-slate-400">
+                    {showViewTicketModal.id}
+                  </span>
+                  <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded uppercase">
+                    Chờ duyệt
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowViewTicketModal(null)}
+                  className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <h3 className="text-base font-bold text-slate-900 mb-2">
+                Phiếu giải trình {showViewTicketModal.violationType || "Bảo mật"}
               </h3>
-              <p className="text-xs text-gray-500 mb-5 font-medium leading-relaxed">
-                Hệ thống phát hiện thiết bị đang nằm{" "}
-                <span className="font-bold text-red-600">
-                  ngoài vùng định vị (GPS)
-                </span>{" "}
-                hoặc sai địa chỉ MAC Wifi cửa hàng.
-              </p>
 
-              <label className="block text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">
-                Lý do (Bắt buộc):
-              </label>
-              <select
-                className="w-full bg-gray-50 border-2 border-gray-100 rounded-xl p-3 text-xs font-bold focus:outline-none focus:border-black mb-3 appearance-none"
-                onChange={(e) => {
-                  const val = e.target.value;
-                  // Handle setting exception reason in state if needed, or just use ref/value
-                }}
-                id="exception-reason"
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2.5 text-xs mb-5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Ca:</span>
+                  <span className="font-bold text-slate-900">
+                    {showViewTicketModal.relatedShift?.shiftName || "Ca Sáng"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Thời gian gửi:</span>
+                  <span className="font-bold text-slate-900">
+                    {format(showViewTicketModal.submittedAt, "HH:mm, dd/MM/yyyy")}
+                  </span>
+                </div>
+                <div className="pt-2 border-t border-slate-200/60">
+                  <span className="text-slate-500 block mb-1">Nội dung giải trình:</span>
+                  <p className="text-slate-800 font-medium leading-relaxed bg-white p-2.5 rounded-xl border border-slate-100">
+                    {showViewTicketModal.reason}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowViewTicketModal(null)}
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all"
               >
-                <option value="Lỗi GPS thiết bị / Mạng chập chờn">
-                  Lỗi GPS thiết bị / Mạng chập chờn
-                </option>
-                <option value="Mất điện / Không có Wifi cửa hàng">
-                  Mất điện / Không có Wifi cửa hàng
-                </option>
-                <option value="Điểm danh hộ (Có sự đồng ý của Quản lý)">
-                  Điểm danh hộ (Có sự đồng ý của Quản lý)
-                </option>
-                <option value="Khác">Khác...</option>
-              </select>
-
-              <textarea
-                className="w-full bg-gray-50 border-2 border-gray-100 rounded-xl p-3 text-xs focus:outline-none focus:border-black mb-3"
-                rows={2}
-                placeholder="Mô tả thêm chi tiết (Tùy chọn)..."
-                id="exception-note"
-              ></textarea>
-
-              <button 
-                id="selfie-btn"
-                onClick={(e) => {
-                  const btn = e.currentTarget;
-                  btn.classList.remove("bg-white", "border-gray-200", "text-gray-700");
-                  btn.classList.add("bg-emerald-50", "border-solid", "border-emerald-500", "text-emerald-700");
-                  btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-circle-2 w-4 h-4 mr-2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg> Đã chụp Selfie Timestamp`;
-                  const submitBtn = document.getElementById("exception-submit-btn") as HTMLButtonElement | null;
-                  if (submitBtn) {
-                     submitBtn.disabled = false;
-                     submitBtn.classList.remove("bg-gray-200", "text-gray-400", "cursor-not-allowed");
-                     submitBtn.classList.add("bg-blue-600", "hover:bg-blue-700", "text-white", "shadow-sm");
-                  }
-                }}
-                className="w-full flex items-center justify-center py-3 bg-white border-2 border-dashed border-gray-300 rounded-xl text-xs font-bold text-gray-700 mb-6 transition-all hover:bg-gray-50"
-              >
-                <Camera className="w-4 h-4 mr-2" /> Chụp Selfie vòng quét (Bắt buộc)
+                Đóng
               </button>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowGpsModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 border border-transparent text-gray-700 font-bold rounded-xl text-sm transition-colors"
-                >
-                  Hủy
-                </button>
-                <button
-                  id="exception-submit-btn"
-                  disabled
-                  onClick={() => {
-                    setShowGpsModal(false);
-                    const reason = (
-                      document.getElementById(
-                        "exception-reason",
-                      ) as HTMLSelectElement
-                    )?.value;
-                    const note = (
-                      document.getElementById(
-                        "exception-note",
-                      ) as HTMLTextAreaElement
-                    )?.value;
-                    proceedCheckIn(
-                      `Ngoại lệ: ${reason}${note ? " - " + note : ""} [Đã đính kèm Selfie]`,
-                    );
-                  }}
-                  className="flex-[2] py-3 bg-gray-200 text-gray-400 cursor-not-allowed font-bold rounded-xl text-sm transition-colors"
-                >
-                  Gửi Ngoại lệ
-                </button>
-              </div>
             </motion.div>
           </motion.div>
         )}
 
-        {/* MODAL: LATE OUT */}
-        {showLateOutModal && (
+        {/* ==================================================== */}
+        {/* MODAL: MISSING CHECK-IN EXPLANATION */}
+        {/* ==================================================== */}
+        {showMissingInExplanationModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1130,203 +1938,120 @@ export default function Attendance() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-gray-100 shadow-lg w-full max-w-sm m-4"
+              className="bg-white rounded-3xl p-6 border border-slate-100 shadow-2xl w-full max-w-sm m-4 relative overflow-hidden"
             >
-              <div className="bg-blue-50 border border-blue-100 p-3 rounded-xl inline-flex mb-4 text-blue-600">
-                <Clock className="w-6 h-6" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">
-                Phân loại giờ tan ca
-              </h3>
-              <p className="text-xs text-gray-500 mb-5 font-medium leading-relaxed">
-                Hệ thống nhận thấy bạn đang tan ca trễ{" "}
-                <span className="font-bold text-blue-600">45 phút</span> so với
-                lịch đăng ký. Vui lòng xác định tính chất:
-              </p>
-
-              <div className="space-y-3 mb-6">
-                <label className="flex items-start gap-3 p-4 bg-white border-2 border-gray-100 rounded-xl cursor-pointer has-[:checked]:bg-blue-50/50 has-[:checked]:border-blue-500 transition-all shadow-sm">
-                  <input
-                    type="radio"
-                    name="lateout"
-                    className="w-5 h-5 accent-blue-600 mt-0.5"
-                    defaultChecked
-                  />
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center">
+                    <Clock className="w-5 h-5" />
+                  </div>
                   <div>
-                    <p className="text-sm font-bold text-gray-900">
-                      Làm thêm giờ (OT)
-                    </p>
-                    <p className="text-xs text-gray-500 mt-1 leading-tight font-medium">
-                      Yêu cầu tính lương OT. Sẽ tạo Ticket tự động.
+                    <h3 className="text-base font-bold text-slate-900">
+                      Giải trình Missing Check-In
+                    </h3>
+                    <p className="text-[11px] text-red-600 font-bold uppercase tracking-wide">
+                      Hệ thống tự động ghi nhận
                     </p>
                   </div>
-                </label>
-                <label className="flex items-start gap-3 p-4 bg-white border-2 border-gray-100 rounded-xl cursor-pointer has-[:checked]:bg-gray-50 has-[:checked]:border-black transition-all shadow-sm">
-                  <input
-                    type="radio"
-                    name="lateout"
-                    className="w-5 h-5 accent-black mt-0.5"
-                  />
-                  <div>
-                    <p className="text-sm font-bold text-gray-900">
-                      Lý do cá nhân
-                    </p>
-                    <p className="text-xs text-gray-500 mt-1 leading-tight font-medium">
-                      Ở lại đợi bạn bè, che mưa... KHÔNG được tính lương.
-                    </p>
-                  </div>
-                </label>
-              </div>
-
-              <div className="flex gap-3">
+                </div>
                 <button
-                  onClick={() => setShowLateOutModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl text-sm transition-colors border border-transparent"
+                  onClick={() => setShowMissingInExplanationModal(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Context Summary */}
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-4 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Cửa hàng:</span>
+                  <span className="font-bold text-slate-900">
+                    {currentShift?.storeName || "HMK Nguyễn Trãi"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Ca làm việc:</span>
+                  <span className="font-bold text-slate-900">
+                    {currentShift?.shiftName || "Ca Sáng"} ({currentShift?.timeStr || "08:00 – 15:00"})
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Trạng thái ticket:</span>
+                  <span className="font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                    Chờ giải trình
+                  </span>
+                </div>
+              </div>
+
+              {/* Explanation textarea (NO manual time input!) */}
+              <div className="mb-5">
+                <label className="block text-xs font-bold text-slate-800 mb-1.5 uppercase tracking-wide">
+                  Lý do giải trình <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  id="missing-checkin-reason"
+                  rows={3}
+                  placeholder="Nhập lý do chưa bấm Check-in (VD: Khách đông phục vụ liên tục, hỗ trợ chi nhánh khác...)"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:border-slate-900 transition-all placeholder:text-slate-400"
+                ></textarea>
+              </div>
+
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setShowMissingInExplanationModal(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
                 >
                   Hủy
                 </button>
                 <button
                   onClick={() => {
-                    setShowLateOutModal(false);
-                    processFinalCheckOut("Phân loại: OT");
-                  }}
-                  className="flex-[2] py-3 bg-black hover:bg-gray-900 text-white font-bold rounded-xl text-sm transition-all border border-transparent shadow-sm"
-                >
-                  Check-out
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-
-        {/* MODAL: FORGOT CHECK-IN BLOCKER */}
-        {showForgotInModal && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-red-100 shadow-xl w-full max-w-sm m-4 relative overflow-hidden"
-            >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-red-500/10 rounded-full blur-3xl"></div>
-
-              <div className="flex items-center gap-3 mb-5 relative z-10">
-                <div className="bg-red-50 border border-red-100 w-12 h-12 rounded-xl flex items-center justify-center text-red-600 shrink-0">
-                  <AlertTriangle className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 leading-tight">
-                    Bổ sung Check-in
-                  </h3>
-                  <p className="text-xs text-red-600 font-bold uppercase tracking-wide mt-0.5">
-                    Hệ thống thiếu dữ liệu
-                  </p>
-                </div>
-              </div>
-
-              <div className="relative z-10">
-                {/* Context Card */}
-                <div className="bg-gray-50 border-2 border-gray-100 rounded-xl p-3.5 mb-5 flex items-start gap-3">
-                  <div className="bg-white border border-gray-200 w-11 h-11 rounded-lg flex flex-col items-center justify-center shrink-0 shadow-sm">
-                    <span className="text-[10px] font-bold uppercase text-gray-400">
-                      T{new Date().getDay() + 1}
-                    </span>
-                    <span className="text-sm font-bold text-gray-900 leading-none">
-                      {new Date().getDate()}
-                    </span>
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-gray-900">
-                      {shiftType === "morning" ? "Ca Sáng" : "Ca Tối"}
-                    </h4>
-                    <p className="text-[11px] text-gray-500 font-mono font-medium mt-0.5">
-                      {shiftType === "morning"
-                        ? "08:00 - 12:00"
-                        : "15:00 - 19:00"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="bg-white p-4 rounded-xl border-2 border-red-100 mb-6 shadow-sm">
-                  <label className="block text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">
-                    Giờ vào ca thực tế <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    id="forgot-in-time"
-                    type="time"
-                    className="w-full bg-gray-50 border-2 border-gray-100 py-3 px-4 rounded-xl focus:outline-none focus:border-red-500 mb-4 font-mono font-bold text-base transition-all"
-                    defaultValue={shiftType === "morning" ? "08:00" : "15:00"}
-                  />
-
-                  <label className="block text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">
-                    Lý do quên check-in <span className="text-red-500">*</span>
-                  </label>
-                  <textarea
-                    id="forgot-in-reason"
-                    className="w-full bg-gray-50 border-2 border-gray-100 p-3 rounded-xl text-sm focus:outline-none focus:border-red-500 mb-1 transition-all"
-                    rows={2}
-                    placeholder="VD: Điện thoại hết pin, máy lỗi ứng dụng..."
-                  ></textarea>
-                </div>
-              </div>
-
-              <div className="flex gap-3 relative z-10">
-                <button
-                  onClick={() => setShowForgotInModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl text-sm transition-colors"
-                >
-                  Hủy
-                </button>
-                <button
-                  onClick={() => {
-                    setShowForgotInModal(false);
-                    const time =
-                      (
-                        document.getElementById(
-                          "forgot-in-time",
-                        ) as HTMLInputElement
-                      )?.value || "08:00";
                     const reason =
                       (
                         document.getElementById(
-                          "forgot-in-reason",
+                          "missing-checkin-reason"
                         ) as HTMLTextAreaElement
-                      )?.value || "Quên check-in";
+                      )?.value || "Đã giải trình Missing Check-In";
 
-                    // Call Fake API Pause Incident Ticket
-                    setLogs((prev) => [
-                      {
-                        type: "exception",
-                        note: `Check-in bổ sung (${time}): ${reason}`,
-                        // Note: Mocking Pause Incident Ticket & CHT notification
-                        time: new Date(),
-                      },
-                      ...prev,
-                    ]);
+                    if (activeMissingInTicket) {
+                      submitMissingCheckInExplanation(activeMissingInTicket.id, reason);
+                    } else {
+                      submitAttendanceTicket({
+                        type: "missing_check_in",
+                        date: new Date(),
+                        reason: reason,
+                        useAnnualLeaveIntent: false,
+                        relatedShift: currentShift ? {
+                          id: currentShift.id,
+                          shiftName: currentShift.shiftName,
+                          timeStr: currentShift.timeStr,
+                          storeName: currentShift.storeName,
+                          hours: currentShift.hours,
+                        } : undefined,
+                      });
+                    }
 
-                    // Recover the UI
-                    setScenario("normal");
-                    setAttState(
-                      shiftType === "morning" ? "checklist_open" : "working",
-                    );
-                    setHasCheckedIn(true);
+                    setShowMissingInExplanationModal(false);
+                    setScenario("missing_in_explained");
+                    setToast({
+                      message: "Đã lưu giải trình Missing Check-In",
+                      subMessage: "Bạn vẫn có thể Check-in lại bình thường trong thời gian diễn ra ca.",
+                      type: "success",
+                    });
                   }}
-                  className="flex-[2] py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
+                  className="flex-[2] py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-95"
                 >
-                  Gửi yêu cầu bổ sung
+                  Xác nhận
                 </button>
               </div>
             </motion.div>
           </motion.div>
         )}
 
-        {/* MODAL: FORGOT OUT (AUTO CHECKOUT) */}
-        {showForgotOutModal && (
+        {/* ==================================================== */}
+        {/* SECTION L: TRAVEL RETURN CLAIM MODAL / BOTTOM SHEET */}
+        {/* ==================================================== */}
+        {showTravelReturnModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1337,179 +2062,122 @@ export default function Attendance() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-amber-100 shadow-xl w-full max-w-sm m-4 relative overflow-hidden"
+              className="bg-white rounded-3xl p-6 border border-slate-100 shadow-2xl w-full max-w-sm m-4 relative overflow-hidden"
             >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl"></div>
-
-              <div className="flex items-center gap-3 mb-5 relative z-10">
-                <div className="bg-amber-50 border border-amber-100 w-12 h-12 rounded-xl flex items-center justify-center text-amber-600 shrink-0">
-                  <AlertTriangle className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 leading-tight">
-                    Bổ sung Check-out
-                  </h3>
-                  <p className="text-xs text-amber-600 font-bold uppercase tracking-wide mt-0.5">
-                    Hệ thống đóng ca tự động
-                  </p>
-                </div>
-              </div>
-
-              <div className="relative z-10">
-                <p className="text-xs text-gray-500 mb-4 font-medium leading-relaxed">
-                  Ca làm việc của bạn đã kéo dài quá giới hạn và bị đóng tự
-                  động. Vui lòng khai báo giờ ra ca thực tế.
-                </p>
-
-                {/* Context Card */}
-                <div className="bg-gray-50 border-2 border-gray-100 rounded-xl p-3.5 mb-5 flex items-start gap-3">
-                  <div className="bg-white border border-gray-200 w-11 h-11 rounded-lg flex flex-col items-center justify-center shrink-0 shadow-sm">
-                    <span className="text-[10px] font-bold uppercase text-gray-400">
-                      T{new Date().getDay() + 1}
-                    </span>
-                    <span className="text-sm font-bold text-gray-900 leading-none">
-                      {new Date().getDate()}
-                    </span>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                    <MapPin className="w-5 h-5" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-bold text-gray-900">
-                      {shiftType === "morning" ? "Ca Sáng" : "Ca Tối"}
-                    </h4>
-                    <p className="text-[11px] text-gray-500 font-mono font-medium mt-0.5">
-                      {shiftType === "morning"
-                        ? "08:00 - 12:00"
-                        : "15:00 - 19:00"}
+                    <h3 className="text-base font-bold text-slate-900">
+                      Khai báo di chuyển chiều về
+                    </h3>
+                    <p className="text-[11px] text-indigo-600 font-bold uppercase tracking-wide">
+                      Hỗ trợ B → Quay lại A
                     </p>
                   </div>
                 </div>
+                <button
+                  onClick={() => setShowTravelReturnModal(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
 
-                <div className="bg-white p-4 rounded-xl border-2 border-amber-100 mb-6 shadow-sm">
-                  <label className="block text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">
-                    Giờ ra ca thực tế <span className="text-amber-500">*</span>
-                  </label>
+              {/* Read-only Absence Summary */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2.5 text-xs mb-5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Check-out tại Store B (Cầu Giấy):</span>
+                  <span className="font-bold text-slate-900 font-mono">
+                    {checkoutBTime || "Chưa ghi nhận"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500 font-medium">Check-in tại Store A (Nguyễn Trãi):</span>
+                  <span className="font-bold text-slate-900 font-mono">
+                    {checkinATime || "Chưa ghi nhận"}
+                  </span>
+                </div>
+                <div className="flex justify-between pt-2 border-t border-slate-200/60">
+                  <span className="text-slate-700 font-bold">Thời gian vắng thực tế:</span>
+                  <span className="font-extrabold text-indigo-700 font-mono text-sm">
+                    {calculatedActualAbsenceMinutes} phút
+                  </span>
+                </div>
+              </div>
+
+              {(!checkoutBTime || !checkinATime) && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[11px] flex items-center gap-1.5 font-medium">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  Khai báo di chuyển chỉ khả dụng sau khi có đầy đủ Check-out tại Store B và Check-in tại Store A.
+                </div>
+              )}
+
+              {/* Editable Travel Minutes Claim */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-slate-800 mb-1.5 uppercase tracking-wide">
+                  Thời gian di chuyển đề nghị (phút) <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
                   <input
-                    id="forgot-out-time"
-                    type="time"
-                    className="w-full bg-gray-50 border-2 border-gray-100 py-3 px-4 rounded-xl focus:outline-none focus:border-amber-500 mb-4 font-mono font-bold text-base transition-all"
-                    defaultValue={shiftType === "morning" ? "12:00" : "19:00"}
+                    type="number"
+                    value={travelClaimMinutes}
+                    onChange={(e) => handleTravelClaimChange(parseInt(e.target.value) || 0)}
+                    min={0}
+                    max={60}
+                    disabled={!checkoutBTime || !checkinATime || calculatedActualAbsenceMinutes <= 0}
+                    className={cn(
+                      "w-full bg-slate-50 border rounded-xl py-3 px-4 text-base font-bold font-mono focus:outline-none transition-all",
+                      travelClaimError
+                        ? "border-red-500 text-red-700 bg-red-50/50"
+                        : "border-slate-200 text-slate-900 focus:border-slate-900",
+                      (!checkoutBTime || !checkinATime) && "opacity-60 cursor-not-allowed"
+                    )}
                   />
-
-                  <label className="block text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">
-                    Lý do quên check-out{" "}
-                    <span className="text-amber-500">*</span>
-                  </label>
-                  <textarea
-                    id="forgot-out-reason"
-                    className="w-full bg-gray-50 border-2 border-gray-100 p-3 rounded-xl text-sm focus:outline-none focus:border-amber-500 mb-1 transition-all"
-                    rows={2}
-                    placeholder="VD: Khách đông quá, máy pos lỗi..."
-                  ></textarea>
+                  <span className="absolute right-4 top-3.5 text-xs font-bold text-slate-400">
+                    phút
+                  </span>
                 </div>
-              </div>
 
-              <div className="flex gap-3 relative z-10">
-                <button
-                  onClick={() => setShowForgotOutModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 border border-transparent text-gray-700 font-bold rounded-xl text-sm transition-colors"
-                >
-                  Hủy
-                </button>
-                <button
-                  onClick={() => {
-                    setShowForgotOutModal(false);
-                    const time =
-                      (
-                        document.getElementById(
-                          "forgot-out-time",
-                        ) as HTMLInputElement
-                      )?.value || "20:00";
-                    const reason =
-                      (
-                        document.getElementById(
-                          "forgot-out-reason",
-                        ) as HTMLTextAreaElement
-                      )?.value || "Quên check-out";
-
-                    setLogs((prev) => [
-                      {
-                        type: "exception",
-                        note: `Check-out bổ sung (${time}): ${reason}`,
-                        time: new Date(),
-                      },
-                      ...prev,
-                    ]);
-
-                    setScenario("normal");
-                    setAttState("done");
-                  }}
-                  className="flex-[2] py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
-                >
-                  Gửi yêu cầu
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-        {/* MODAL: BLOCK CHECKIN */}
-        {showBlockCheckinModal && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-red-100 shadow-xl w-full max-w-sm m-4 relative overflow-hidden"
-            >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-red-500/10 rounded-full blur-3xl"></div>
-
-              <div className="flex items-center gap-3 mb-5 relative z-10">
-                <div className="bg-red-50 border border-red-100 w-12 h-12 rounded-xl flex items-center justify-center text-red-600 shrink-0">
-                  <XCircle className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 leading-tight">
-                    Không thể Check-in
-                  </h3>
-                  <p className="text-xs text-red-600 font-bold uppercase tracking-wide mt-0.5">
-                    Hệ thống bị khóa
+                {/* Inline Validation Error */}
+                {travelClaimError && (
+                  <p className="text-[11px] text-red-600 font-bold mt-1.5 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    {travelClaimError}
                   </p>
-                </div>
+                )}
               </div>
 
-              <div className="relative z-10">
-                <p className="text-xs text-gray-600 font-medium leading-relaxed mb-6">
-                  Bạn không thể bắt đầu ca làm việc mới vì chưa giải quyết các
-                  sự cố chấm công từ ca làm việc trước đó. Vui lòng trở về
-                  Action Center để bổ sung thông tin!
-                </p>
-              </div>
-
-              <div className="flex gap-3 relative z-10">
+              <div className="flex gap-2.5">
                 <button
-                  onClick={() => setShowBlockCheckinModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 border border-transparent text-gray-700 font-bold rounded-xl text-sm transition-colors"
+                  onClick={() => setShowTravelReturnModal(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
                 >
-                  Hủy
+                  Bỏ qua
                 </button>
                 <button
-                  onClick={() => {
-                    setShowBlockCheckinModal(false);
-                    navigate("/requests");
-                  }}
-                  className="flex-[2] py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
+                  disabled={
+                    !!travelClaimError ||
+                    travelClaimMinutes <= 0 ||
+                    !checkoutBTime ||
+                    !checkinATime ||
+                    calculatedActualAbsenceMinutes <= 0
+                  }
+                  onClick={handleTravelClaimSubmit}
+                  className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-95"
                 >
-                  Về Action Center
+                  {travelSubmitted ? "Đang gửi..." : "Gửi xác nhận di chuyển"}
                 </button>
               </div>
             </motion.div>
           </motion.div>
         )}
 
+        {/* ==================================================== */}
         {/* MODAL: AD-HOC SHIFT */}
+        {/* ==================================================== */}
         {showAdhocModal && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1521,33 +2189,31 @@ export default function Attendance() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl p-6 border-2 border-indigo-100 shadow-xl w-full max-w-sm m-4 relative overflow-hidden"
+              className="bg-white rounded-3xl p-6 border border-slate-100 shadow-2xl w-full max-w-sm m-4 relative overflow-hidden"
             >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
-
-              <div className="flex items-center gap-3 mb-5 relative z-10">
-                <div className="bg-indigo-50 border border-indigo-100 w-12 h-12 rounded-xl flex items-center justify-center text-indigo-600 shrink-0">
-                  <MapPin className="w-6 h-6" />
+              <div className="flex items-center gap-3 mb-5">
+                <div className="bg-indigo-50 w-11 h-11 rounded-2xl flex items-center justify-center text-indigo-600 shrink-0">
+                  <MapPin className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-gray-900 leading-tight">
-                    Ca Đột Xuất
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">
+                    Chấm công Ca Đột Xuất
                   </h3>
-                  <p className="text-xs text-indigo-600 font-bold uppercase tracking-wide mt-0.5">
-                    Khai báo thông tin
+                  <p className="text-[11px] text-indigo-600 font-bold uppercase tracking-wider mt-0.5">
+                    Khai báo thông tin ca
                   </p>
                 </div>
               </div>
 
-              <div className="space-y-4 mb-4 relative z-10">
+              <div className="space-y-3.5 mb-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1.5 uppercase tracking-wider">
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">
                     Cửa hàng
                   </label>
                   <select
                     value={adhocStore}
                     onChange={(e) => setAdhocStore(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium appearance-none"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-3.5 py-3 outline-none focus:border-slate-900 font-semibold"
                   >
                     <option value="" disabled>
                       Chọn cửa hàng...
@@ -1558,36 +2224,30 @@ export default function Attendance() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1.5 uppercase tracking-wider">
-                    Lý do
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">
+                    Lý do đột xuất
                   </label>
                   <select
                     value={adhocReason}
                     onChange={(e) => setAdhocReason(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium appearance-none"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-3.5 py-3 outline-none focus:border-slate-900 font-semibold"
                   >
                     <option value="" disabled>
                       Chọn lý do...
                     </option>
-                    <option value="Tăng cường giờ cao điểm">
-                      Tăng cường giờ cao điểm
-                    </option>
-                    <option value="Quản lý gọi hỗ trợ">
-                      Quản lý gọi hỗ trợ
-                    </option>
-                    <option value="Thay thế nhân sự ốm">
-                      Thay thế nhân sự ốm
-                    </option>
+                    <option value="Tăng cường giờ cao điểm">Tăng cường giờ cao điểm</option>
+                    <option value="Quản lý gọi hỗ trợ gấp">Quản lý gọi hỗ trợ gấp</option>
+                    <option value="Thay thế nhân sự nghỉ đột xuất">Thay thế nhân sự nghỉ đột xuất</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1.5 uppercase tracking-wider">
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">
                     Vai trò đảm nhiệm
                   </label>
                   <select
                     value={adhocSkill}
                     onChange={(e) => setAdhocSkill(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl px-4 py-3 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-medium appearance-none"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-3.5 py-3 outline-none focus:border-slate-900 font-semibold"
                   >
                     <option value="" disabled>
                       Chọn vai trò...
@@ -1601,17 +2261,17 @@ export default function Attendance() {
                 </div>
               </div>
 
-              <div className="bg-amber-50 border border-amber-200/60 rounded-xl p-3 mb-6 relative z-10 flex gap-3">
+              <div className="bg-amber-50 border border-amber-200/60 rounded-xl p-3 mb-5 flex gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <p className="text-[10px] text-amber-700 font-medium leading-relaxed">
-                  Vì là ca Đột xuất, thao tác này sẽ kích hoạt <span className="font-bold text-amber-800">Cờ Ngoại lệ</span>. Quản lý bắt buộc phải <span className="font-bold text-amber-800 underline">Hợp thức hóa</span> ca này sau khi bạn kết thúc, nếu không bạn sẽ không được tính lương!
+                <p className="text-[10px] text-amber-800 font-medium leading-relaxed">
+                  Ca đột xuất sẽ được gửi kèm <span className="font-bold">Cờ ngoại lệ</span> để Quản lý duyệt hợp thức hóa sau khi bạn hoàn thành ca.
                 </p>
               </div>
 
-              <div className="flex gap-3 relative z-10">
+              <div className="flex gap-2.5">
                 <button
                   onClick={() => setShowAdhocModal(false)}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 border border-transparent text-gray-700 font-bold rounded-xl text-sm transition-colors"
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
                 >
                   Hủy
                 </button>
@@ -1622,21 +2282,24 @@ export default function Attendance() {
                     const newShift = addAdhocShift(
                       adhocStore,
                       adhocSkill,
-                      adhocReason,
+                      adhocReason
                     );
                     setActiveShiftId(newShift.id);
-                    setShiftType("morning"); // arbitrary
+                    setShiftType("morning");
                     setAttState("pending_in");
+                    setToast({
+                      message: "Đã tạo ca đột xuất thành công",
+                      type: "info",
+                    });
                   }}
-                  className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
+                  className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-95"
                 >
-                  {activeShiftId?.startsWith("adhoc_") ? "Cập nhật" : "Tiếp tục"}
+                  Vào ca ngay
                 </button>
               </div>
             </motion.div>
           </motion.div>
         )}
-        {/* MODAL: AD-HOC SHIFT */}
       </AnimatePresence>
     </div>
   );
