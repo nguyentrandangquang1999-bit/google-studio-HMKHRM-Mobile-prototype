@@ -219,11 +219,11 @@ export default function Notifications() {
 
   const getIcon = (type: NotificationType, isUrgent?: boolean) => {
     if (type === "briefing") {
-      return isUrgent ? <BellRing className="w-5 h-5 text-orange-600" /> : <Megaphone className="w-5 h-5 text-indigo-600" />;
+      return isUrgent ? <BellRing className="w-5 h-5 text-orange-600" /> : <Megaphone className="w-5 h-5 text-primary" />;
     }
     switch (type) {
       case "system":
-        return <Bell className="w-5 h-5 text-indigo-500" />;
+        return <Bell className="w-5 h-5 text-primary" />;
       case "task":
         return <CheckSquare className="w-5 h-5 text-amber-500" />;
       case "approval":
@@ -233,11 +233,11 @@ export default function Notifications() {
 
   const getBg = (type: NotificationType, isUrgent?: boolean) => {
     if (type === "briefing") {
-      return isUrgent ? "bg-orange-100 border-orange-200" : "bg-indigo-50 border-indigo-100";
+      return isUrgent ? "bg-orange-100 border-orange-200" : "bg-primary/10 border-primary/20";
     }
     switch (type) {
       case "system":
-        return "bg-indigo-50 border-indigo-100";
+        return "bg-primary/10 border-primary/20";
       case "task":
         return "bg-amber-50 border-amber-100";
       case "approval":
@@ -276,7 +276,7 @@ export default function Notifications() {
           </div>
           <button
             onClick={handleMarkAllAsRead}
-            className="text-xs font-bold text-indigo-600 uppercase tracking-wide hover:underline"
+            className="text-xs font-bold text-primary uppercase tracking-wide hover:underline"
           >
             Đọc tất cả
           </button>
@@ -291,7 +291,7 @@ export default function Notifications() {
               className={cn(
                 "px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border-2 uppercase tracking-wide flex items-center gap-1.5",
                 activeTab === tab.id
-                  ? "bg-black text-white border-black shadow-sm"
+                  ? "bg-primary text-white border-primary shadow-sm"
                   : "bg-white text-gray-500 border-gray-100 hover:border-gray-200 hover:text-gray-900",
               )}
             >
@@ -324,7 +324,7 @@ export default function Notifications() {
                 className={cn(
                   "p-4 bg-white border-2 rounded-xl transition-all cursor-pointer active:scale-[0.98] shadow-sm relative overflow-hidden",
                   !notification.isRead
-                    ? (notification.isUrgent && !notification.isAcknowledged ? "border-orange-300 shadow-md bg-orange-50/20" : "border-indigo-100 shadow-md")
+                    ? (notification.isUrgent && !notification.isAcknowledged ? "border-orange-300 shadow-md bg-orange-50/20" : "border-primary/30 shadow-md")
                     : "border-gray-100 opacity-80",
                 )}
               >
@@ -362,7 +362,7 @@ export default function Notifications() {
                       </span>
                     </div>
                     {notification.storeName && (
-                      <p className="text-[10px] font-bold text-indigo-600 mb-1 uppercase tracking-wide">
+                      <p className="text-[10px] font-bold text-primary mb-1 uppercase tracking-wide">
                          {notification.storeName}
                       </p>
                     )}
@@ -437,7 +437,7 @@ export default function Notifications() {
                            Khẩn cấp
                          </span>
                        ) : (
-                         <span className="inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-indigo-50 text-indigo-700 uppercase tracking-wide">
+                         <span className="inline-flex items-center px-2 py-1 rounded text-xs font-bold bg-primary/10 text-primary uppercase tracking-wide">
                            Bảng tin
                          </span>
                        )}
@@ -456,8 +456,8 @@ export default function Notifications() {
 
                      <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 mb-6 space-y-3">
                        <div className="flex items-center gap-3">
-                         <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
-                           <span className="text-xs font-bold text-indigo-700 uppercase">{selectedBriefing.senderRole}</span>
+                         <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                           <span className="text-xs font-bold text-primary uppercase">{selectedBriefing.senderRole}</span>
                          </div>
                          <div>
                            <p className="text-sm font-bold text-gray-900">{selectedBriefing.senderName}</p>
@@ -516,7 +516,7 @@ export default function Notifications() {
                      ) : (
                        <button
                          onClick={() => setSelectedBriefingId(null)}
-                         className="w-full py-3.5 bg-slate-900 text-white hover:bg-slate-800 font-bold rounded-xl transition-all shadow-md active:scale-[0.98] flex items-center justify-center"
+                         className="w-full py-3.5 bg-primary hover:bg-primary/90 text-white font-bold rounded-xl transition-all shadow-md active:scale-[0.98] flex items-center justify-center"
                        >
                          Đóng
                        </button>

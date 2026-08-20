@@ -97,38 +97,37 @@ export default function Dashboard() {
 
           <div className="flex flex-col gap-3">
             {urgentUnackBriefing ? (
-              <div className="bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-orange-200 rounded-2xl p-4 shadow-sm relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-card relative overflow-hidden">
                 <div className="flex items-start gap-3 relative z-10 mb-3">
-                  <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0 border border-orange-200 shadow-sm">
-                    <BellRing className="w-5 h-5 text-orange-600" />
+                  <div className="w-10 h-10 rounded-xl bg-[#F0F6FA] border border-[#558BAD]/20 flex items-center justify-center shrink-0 shadow-soft">
+                    <BellRing className="w-5 h-5 text-[#558BAD]" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap gap-1.5 mb-1.5">
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-red-100 text-red-700 uppercase tracking-widest">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-bold bg-red-50 text-red-600 border border-red-100 uppercase tracking-wider">
                         Khẩn cấp
                       </span>
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-orange-100 text-orange-700 uppercase tracking-widest">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-bold bg-[#F0F6FA] text-[#558BAD] border border-[#558BAD]/20 uppercase tracking-wider">
                         Cần xác nhận
                       </span>
                     </div>
-                    <h3 className="text-sm font-bold text-gray-900 leading-snug">
+                    <h3 className="text-sm font-bold text-slate-900 leading-snug">
                       {urgentUnackBriefing.title}
                     </h3>
-                    <p className="text-xs text-orange-800 font-medium mt-0.5 truncate">
+                    <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
                       {urgentUnackBriefing.senderRole} {urgentUnackBriefing.senderName} • {urgentUnackBriefing.storeName}
                     </p>
                   </div>
                 </div>
                 
-                <p className="text-xs text-slate-700 leading-relaxed mb-4 line-clamp-2">
+                <p className="text-xs text-slate-600 leading-relaxed mb-4 line-clamp-2">
                   {urgentUnackBriefing.message}
                 </p>
 
                 <div className="flex gap-2">
                   <Link
                     to={`/notifications?tab=briefing&id=${urgentUnackBriefing.id}`}
-                    className="flex-1 py-2.5 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95"
+                    className="flex-1 py-2.5 bg-[#558BAD] hover:bg-[#446E8A] text-white text-xs font-bold rounded-xl flex items-center justify-center transition-all shadow-soft active:scale-98"
                   >
                     Đọc & xác nhận
                   </Link>
@@ -144,19 +143,19 @@ export default function Dashboard() {
                     to={`/notifications?tab=briefing&id=${briefing.id}`}
                     className={cn(
                       "min-w-[280px] snap-center bg-white border border-slate-100 rounded-2xl p-4 shadow-card hover:border-slate-200 transition-colors flex flex-col relative overflow-hidden",
-                      !briefing.isRead && "border-indigo-100 bg-indigo-50/30"
+                      !briefing.isRead && "border-[#558BAD]/30 bg-[#F0F6FA]/50"
                     )}
                   >
                     {!briefing.isRead && (
-                      <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-indigo-500"></div>
+                      <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-[#558BAD]"></div>
                     )}
                     <div className="flex items-center gap-2 mb-2">
-                      <Megaphone className={cn("w-4 h-4", !briefing.isRead ? "text-indigo-600" : "text-slate-400")} />
+                      <Megaphone className={cn("w-4 h-4", !briefing.isRead ? "text-[#558BAD]" : "text-slate-400")} />
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
                         {briefing.senderRole} {briefing.senderName}
                       </span>
                     </div>
-                    <h3 className="text-sm font-bold text-gray-900 line-clamp-1 mb-1">
+                    <h3 className="text-sm font-bold text-slate-900 line-clamp-1 mb-1">
                       {briefing.title}
                     </h3>
                     <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
@@ -168,10 +167,10 @@ export default function Dashboard() {
             ) : null}
             
             {todayBriefings.length === 0 ? (
-               <div className="bg-slate-50 rounded-2xl p-6 text-center border-2 border-dashed border-slate-200">
+               <div className="bg-slate-50/70 rounded-2xl p-6 text-center border border-slate-200">
                   <Megaphone className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                  <p className="text-sm font-semibold text-slate-600">Chưa có bảng tin đầu ca</p>
-                  <p className="text-xs text-slate-400 mt-1 max-w-[200px] mx-auto">Khi quản lý gửi lời nhắn hoặc mục tiêu đầu ca, nội dung sẽ hiển thị tại đây.</p>
+                  <p className="text-sm font-semibold text-slate-700">Chưa có bảng tin đầu ca</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[220px] mx-auto">Khi quản lý gửi lời nhắn hoặc mục tiêu đầu ca, nội dung sẽ hiển thị tại đây.</p>
                </div>
             ) : null}
           </div>
@@ -185,7 +184,7 @@ export default function Dashboard() {
             </h2>
             <Link
               to="/timesheet"
-              className="text-[10px] font-bold text-slate-900 bg-slate-100 px-2 py-1 rounded-md hover:bg-slate-200 flex items-center uppercase tracking-wide transition-colors"
+              className="text-[10px] font-bold text-[#558BAD] bg-[#F0F6FA] border border-[#558BAD]/20 px-2.5 py-1 rounded-lg hover:bg-[#E2EDF4] flex items-center uppercase tracking-wide transition-colors"
             >
               Chi tiết <ChevronRight className="w-3 h-3 ml-0.5" />
             </Link>
@@ -228,13 +227,13 @@ export default function Dashboard() {
                   className={cn(
                     registeredHours > maxHoursPerWeek
                       ? "text-red-500"
-                      : "text-slate-900",
+                      : "text-[#558BAD]",
                   )}
                 >
                   {Math.round((registeredHours / maxHoursPerWeek) * 100)}%
                 </span>
               </div>
-              <div className="w-full bg-slate-50 h-2.5 rounded-full overflow-hidden flex border border-slate-100">
+              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden flex border border-slate-200/50">
                 <motion.div
                   initial={{ width: 0 }}
                   animate={{ 
@@ -244,7 +243,7 @@ export default function Dashboard() {
                     "h-full rounded-full transition-all duration-1000",
                     registeredHours > maxHoursPerWeek
                       ? "bg-red-500"
-                      : "bg-slate-900",
+                      : "bg-[#558BAD]",
                   )}
                 ></motion.div>
               </div>
@@ -258,7 +257,7 @@ export default function Dashboard() {
                       "w-2 h-2 rounded-full",
                       registeredHours > maxHoursPerWeek
                         ? "bg-red-500"
-                        : "bg-slate-900",
+                        : "bg-[#558BAD]",
                     )}
                   ></span>
                   <span>

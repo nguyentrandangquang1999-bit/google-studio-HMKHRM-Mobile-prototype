@@ -2,9 +2,16 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #1e40af;
-  --color-primary-light: #eff6ff;
-  --color-primary-dark: #1e3a8a;
+  --color-primary: #558BAD;
+  --color-primary-light: #F0F6FA;
+  --color-primary-tint: #E2EDF4;
+  --color-primary-medium: #8CB4CC;
+  --color-primary-dark: #446E8A;
+  --color-primary-darker: #375A72;
+  
+  --color-brand: #558BAD;
+  --color-brand-light: #F0F6FA;
+  --color-brand-dark: #446E8A;
   
   --color-success: #10b981;
   --color-success-light: #ecfdf5;
@@ -15,8 +22,9 @@
   --color-warning: #f59e0b;
   --color-warning-light: #fffbeb;
   
-  --color-background: #f8fafc;
+  --color-background: #ffffff;
   --color-surface: #ffffff;
+  --color-neutral-bg: #f8fafc;
   
   --color-slate-50: #f8fafc;
   --color-slate-100: #f1f5f9;
@@ -40,18 +48,18 @@
 
 @layer base {
   body {
-    @apply bg-background text-text-main font-sans antialiased;
+    @apply bg-[#f1f5f9] text-text-main font-sans antialiased;
   }
 }
 
 /* Mobile App Simulation Container */
 .mobile-container {
-  @apply mx-auto w-full max-w-md bg-surface min-h-screen relative overflow-hidden flex flex-col border-x border-slate-100;
+  @apply mx-auto w-full max-w-md bg-white h-[100dvh] max-h-[100dvh] relative overflow-hidden flex flex-col border-x border-slate-200 shadow-2xl;
 }
 
 /* Glassmorphism utilities */
 .glass {
-  @apply bg-white/70 backdrop-blur-md border border-white/20;
+  @apply bg-white/90 backdrop-blur-md border border-slate-100;
 }
 
 /* Custom shadow tiers */
@@ -60,7 +68,7 @@
 }
 
 .shadow-card {
-  box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.04), 0 2px 6px -1px rgb(0 0 0 / 0.03);
+  box-shadow: 0 2px 8px -1px rgb(0 0 0 / 0.04), 0 1px 4px -1px rgb(0 0 0 / 0.02);
 }
 
 /* Hide scrollbar for clean look */

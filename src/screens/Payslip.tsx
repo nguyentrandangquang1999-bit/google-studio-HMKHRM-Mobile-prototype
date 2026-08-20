@@ -31,7 +31,7 @@ export default function Payslip() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50 min-h-screen relative pb-20">
+    <div className="flex flex-col h-full bg-gray-50 min-h-screen relative pb-20 overflow-y-auto">
       <div className="bg-white border-b border-gray-100 px-4 py-3 sticky top-0 z-50 flex items-center justify-between">
         <button onClick={() => navigate(-1)} className="p-2 -ml-2 text-gray-500 hover:text-gray-800">
           <ChevronLeft className="w-6 h-6" />

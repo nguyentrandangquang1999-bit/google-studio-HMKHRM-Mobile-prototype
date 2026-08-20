@@ -23,7 +23,7 @@ export default function Profile() {
     <div className="flex flex-col h-full bg-background overflow-y-auto">
       {/* Header Profile */}
       <div className="bg-white relative pb-8 border-b-2 border-gray-100">
-        <div className="h-32 bg-gray-900"></div>
+        <div className="h-32 bg-gradient-to-r from-[#416C87] to-[#558BAD]"></div>
         <div className="px-5 flex flex-col items-center -mt-12 relative z-10">
           <img
             src={user?.avatar}

@@ -73,6 +73,24 @@ export type AttendanceTicketType =
 export type SecurityViolationType = "GPS" | "WIFI" | "DEVICE";
 export type AttendanceActionType = "CHECK_IN" | "CHECK_OUT";
 
+export type ShiftAttendanceSession = {
+  id: string;
+  shiftId: string;
+  shiftName: string;
+  storeName: string;
+  timeStr: string;
+  hours: number;
+  date: Date;
+  checkInTime: Date;
+  checkOutTime?: Date;
+  status: "working" | "completed" | "pending_qc";
+  statusBadge: string;
+  isAdhoc?: boolean;
+  isSupportShift?: boolean;
+  isReturnShift?: boolean;
+  note?: string;
+};
+
 export type AttendanceTicket = {
   id: string;
   employeeId: string;
@@ -104,6 +122,10 @@ export type AttendanceTicket = {
   isExplained?: boolean;
   employeeExplanation?: string;
   dispatchGroupId?: string;
+  resolutionPath?: "ATTENDANCE_CORRECTION" | "BACKDATED_LEAVE" | null;
+  linkedLeaveRequestId?: string | null;
+  leaveRoutingAt?: Date;
+  isPeriodLocked?: boolean;
 };
 
 export type LeaveCancelRequest = {
@@ -168,6 +190,9 @@ export type LeaveRequest = {
   attachment?: string;
   period?: "Cả ngày" | "Buổi sáng" | "Buổi chiều" | "Theo ca đã xếp";
   affectedShifts?: number;
+  requestMode?: "STANDARD" | "BACKDATED_MISSING_BOTH";
+  sourceType?: "FUTURE_LEAVE" | "MISSING_BOTH";
+  sourceTicketId?: string;
 };
 
 export type Shift = {
@@ -263,6 +288,11 @@ type AppContextType = {
   calculateLeaveDaysFromMinutes: (totalMinutes: number, policy?: LeavePolicy) => { rawDays: number; finalDays: number };
   toggleAnnualLeaveEligibility: () => void;
 
+  // Attendance Records & Sessions
+  attendanceSessions: ShiftAttendanceSession[];
+  recordCheckIn: (shift: Shift, isAdhoc?: boolean) => void;
+  recordCheckOut: (shiftId: string) => void;
+
   // Attendance Tickets & MOB-06
   attendanceTickets: AttendanceTicket[];
   submitAttendanceTicket: (
@@ -289,6 +319,20 @@ type AppContextType = {
   acceptSandwichHandshake: (shiftId: string) => void;
   rejectSandwichHandshake: (shiftId: string, reason?: string) => void;
   transitionShiftToMissingBoth: (shiftId?: string) => AttendanceTicket;
+  createBackdatedLeaveFromMissingBoth: (
+    ticketId: string,
+    leaveTypeOrData: LeaveRequestType | { leaveType: LeaveRequestType; reason: string },
+    maybeReason?: string,
+    attachment?: any
+  ) => { success: boolean; message: string; leaveRequest?: LeaveRequest };
+  commitAttendanceCorrection: (
+    ticketId: string,
+    inTimeOrData?: string | { actualInTime?: string; actualOutTime?: string; reason?: string },
+    maybeOutTime?: string,
+    maybeReason?: string,
+    attachment?: any
+  ) => { success: boolean; message: string; ticket?: AttendanceTicket };
+  togglePeriodLockForTicket: (ticketId: string) => void;
 
   // Briefing Management
   briefings: ShiftBriefing[];
@@ -298,7 +342,7 @@ type AppContextType = {
 
 const mockUser: User = {
   id: "u1",
-  name: "Nguyễn Văn A",
+  name: "Dương Như Mỹ",
   employeeId: "HMK-2023-045",
   role: "Nhân viên bán hàng (NV)",
   department: "Cửa hàng HMK Nguyễn Trãi",
@@ -817,21 +861,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [leaveCancelRequests, setLeaveCancelRequests] = useState<LeaveCancelRequest[]>([]);
   const [attendanceTickets, setAttendanceTickets] = useState<AttendanceTicket[]>([
     {
-      id: "TK-ATT-001",
+      id: "TK-MB-301",
       employeeId: "u1",
       type: "missing_both",
-      date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
-      reason: "Quên check-in & check-out do máy điện thoại hết pin đột xuất.",
-      useAnnualLeaveIntent: true,
+      date: new Date(2026, 7, 2), // 02/08/2026
+      reason: "Không có dữ liệu Check-in & Check-out trong ca làm việc.",
+      useAnnualLeaveIntent: false,
       relatedShift: {
-        id: "s-past-1",
+        id: "s-mb-301",
         shiftName: "Ca Sáng",
         timeStr: "08:00 - 15:00",
         storeName: "HMK Nguyễn Trãi",
         hours: 7,
       },
-      submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+      submittedAt: new Date(2026, 7, 2, 15, 30),
       status: "PENDING",
+      resolutionPath: null,
+      linkedLeaveRequestId: null,
+      isPeriodLocked: false,
     },
   ]);
   const [leavePolicy] = useState<LeavePolicy>(defaultLeavePolicy);
@@ -839,6 +886,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [leaveReservations, setLeaveReservations] = useState<LeaveReservation[]>(initialLeaveReservations);
   const [briefings, setBriefings] = useState<ShiftBriefing[]>(mockBriefingsData);
   const maxHoursPerWeek = 60;
+
+  const [attendanceSessions, setAttendanceSessions] = useState<ShiftAttendanceSession[]>([]);
+
+  const recordCheckIn = (shift: Shift, isAdhoc?: boolean) => {
+    const isAdhocShift = Boolean(
+      isAdhoc ||
+      shift.isAdhoc ||
+      shift.id.startsWith("adhoc_") ||
+      shift.shiftName.toLowerCase().includes("đột xuất")
+    );
+    setAttendanceSessions((prev) => {
+      const existingIdx = prev.findIndex((s) => s.shiftId === shift.id);
+      const newSession: ShiftAttendanceSession = {
+        id: existingIdx >= 0 ? prev[existingIdx].id : `sess_${shift.id}_${Date.now()}`,
+        shiftId: shift.id,
+        shiftName: shift.shiftName,
+        storeName: shift.storeName,
+        timeStr: shift.timeStr,
+        hours: shift.hours,
+        date: new Date(),
+        checkInTime: new Date(),
+        checkOutTime: existingIdx >= 0 ? prev[existingIdx].checkOutTime : undefined,
+        status: isAdhocShift ? "pending_qc" : "working",
+        statusBadge: isAdhocShift ? "Chờ QC duyệt" : "Đang làm việc",
+        isAdhoc: isAdhocShift,
+        isSupportShift: Boolean(shift.isSupportShift),
+        isReturnShift: Boolean(shift.isReturnShift),
+        note: isAdhocShift ? "Chấm công đột xuất - Chờ QC duyệt" : undefined,
+      };
+      if (existingIdx >= 0) {
+        const next = [...prev];
+        next[existingIdx] = newSession;
+        return next;
+      }
+      return [newSession, ...prev];
+    });
+  };
+
+  const recordCheckOut = (shiftId: string) => {
+    setAttendanceSessions((prev) => {
+      const existingIdx = prev.findIndex((s) => s.shiftId === shiftId);
+      if (existingIdx >= 0) {
+        const next = [...prev];
+        const current = next[existingIdx];
+        next[existingIdx] = {
+          ...current,
+          checkOutTime: new Date(),
+          status: "completed",
+          statusBadge: "Đã hoàn tất",
+        };
+        return next;
+      }
+      return prev;
+    });
+  };
 
   const registeredHours = availableShifts
     .filter((s) => s.status === "pending" || s.status === "approved")
@@ -909,6 +1011,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const cancelPendingLeaveRequest = (id: string) => {
     const req = leaveRequests.find((r) => r.id === id);
     if (!req) return;
+
+    if (req.requestMode === "BACKDATED_MISSING_BOTH") {
+      console.warn("Đơn nghỉ phép đột xuất từ Missing Both không hỗ trợ tự hủy trong phiên bản MVP.");
+      return;
+    }
 
     if (req.status !== "PENDING" && (req.status as string) !== "Chờ duyệt") {
       console.warn("Chỉ đơn ở trạng thái PENDING mới có thể tự hủy bởi nhân viên.");
@@ -1480,6 +1587,161 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return missingBothTicket;
   };
 
+  const createBackdatedLeaveFromMissingBoth = (
+    ticketId: string,
+    leaveTypeOrData: LeaveRequestType | { leaveType: LeaveRequestType; reason: string },
+    maybeReason?: string,
+    _attachment?: any
+  ): { success: boolean; message: string; leaveRequest?: LeaveRequest } => {
+    const targetTicket = attendanceTickets.find((t) => t.id === ticketId);
+    if (!targetTicket) {
+      return { success: false, message: `Không tìm thấy ticket: ${ticketId}` };
+    }
+
+    if (targetTicket.isPeriodLocked) {
+      return { success: false, message: "Kỳ công đã khóa. Không thể xử lý yêu cầu này." };
+    }
+
+    if (targetTicket.resolutionPath === "ATTENDANCE_CORRECTION") {
+      return { success: false, message: "Phiếu này đã được cam kết xử lý theo hướng Bổ sung chấm công." };
+    }
+
+    const leaveType = typeof leaveTypeOrData === "object" && leaveTypeOrData !== null
+      ? leaveTypeOrData.leaveType
+      : (leaveTypeOrData as LeaveRequestType);
+    
+    const reason = typeof leaveTypeOrData === "object" && leaveTypeOrData !== null
+      ? leaveTypeOrData.reason
+      : (maybeReason || "");
+
+    if (!leaveType) {
+      return { success: false, message: "Vui lòng chọn loại nghỉ phép." };
+    }
+
+    if (!reason.trim()) {
+      return { success: false, message: "Vui lòng nhập lý do nghỉ phép đột xuất." };
+    }
+
+    const shiftDuration = (targetTicket.relatedShift?.hours || 7) * 60; // 420 mins
+    const { finalDays } = calculateLeaveDaysFromMinutes(shiftDuration, leavePolicy); // 1.0 day for 420 mins
+
+    const newReqId = `LR-BD-${Date.now().toString().slice(-4)}`;
+    const newReq: LeaveRequest = {
+      id: newReqId,
+      employeeId: user?.id || "u1",
+      type: leaveType,
+      fromDate: targetTicket.date,
+      toDate: targetTicket.date,
+      reason: reason.trim(),
+      status: "PENDING",
+      submittedAt: new Date(),
+      branch: targetTicket.relatedShift?.storeName || user?.department || "HMK Nguyễn Trãi",
+      affectedShifts: 1,
+      affectedShiftMinutes: shiftDuration,
+      requestedLeaveDays: finalDays,
+      officialDebitedDays: 0,
+      period: "Cả ngày",
+      requestMode: "BACKDATED_MISSING_BOTH",
+      sourceType: "MISSING_BOTH",
+      sourceTicketId: targetTicket.id,
+      affectedShiftIds: targetTicket.relatedShift?.id ? [targetTicket.relatedShift.id] : [],
+      affectedShiftsList: [
+        {
+          shiftId: targetTicket.relatedShift?.id,
+          date: targetTicket.date instanceof Date ? targetTicket.date.toISOString().split("T")[0] : String(targetTicket.date),
+          shiftName: targetTicket.relatedShift?.shiftName || "Ca Sáng",
+          timeStr: targetTicket.relatedShift?.timeStr || "08:00 - 15:00",
+          storeName: targetTicket.relatedShift?.storeName || "HMK Nguyễn Trãi",
+          hours: targetTicket.relatedShift?.hours || 7,
+          scheduledDurationMinutes: shiftDuration,
+        },
+      ],
+      // CRITICAL: NO RESERVATION FOR BACKDATED LEAVE
+      reservedDays: 0,
+      reservationId: undefined,
+      balanceBefore: leaveBalance.currentBalance,
+      availableBalanceAfterReservation: leaveBalance.available,
+    };
+
+    // Add to leave requests WITHOUT creating active reservation or deducting balance
+    setLeaveRequests((prev) => [newReq, ...prev]);
+
+    // Update source ticket
+    setAttendanceTickets((prev) =>
+      prev.map((t) =>
+        t.id === ticketId
+          ? {
+              ...t,
+              resolutionPath: "BACKDATED_LEAVE",
+              linkedLeaveRequestId: newReqId,
+              leaveRoutingAt: new Date(),
+            }
+          : t
+      )
+    );
+
+    return {
+      success: true,
+      message: "Đã gửi yêu cầu nghỉ đột xuất thành công!",
+      leaveRequest: newReq,
+    };
+  };
+
+  const commitAttendanceCorrection = (
+    ticketId: string,
+    inTimeOrData?: string | { actualInTime?: string; actualOutTime?: string; reason?: string },
+    maybeOutTime?: string,
+    maybeReason?: string,
+    _attachment?: any
+  ): { success: boolean; message: string; ticket?: AttendanceTicket } => {
+    const targetTicket = attendanceTickets.find((t) => t.id === ticketId);
+    if (!targetTicket) {
+      return { success: false, message: `Không tìm thấy ticket: ${ticketId}` };
+    }
+
+    if (targetTicket.isPeriodLocked) {
+      return { success: false, message: "Kỳ công đã khóa. Không thể xử lý yêu cầu này." };
+    }
+
+    if (targetTicket.resolutionPath === "BACKDATED_LEAVE") {
+      return { success: false, message: "Phiếu này đã được chuyển sang yêu cầu Nghỉ đột xuất." };
+    }
+
+    const actualIn = typeof inTimeOrData === "object" && inTimeOrData !== null ? inTimeOrData.actualInTime : inTimeOrData;
+    const actualOut = typeof inTimeOrData === "object" && inTimeOrData !== null ? inTimeOrData.actualOutTime : maybeOutTime;
+    const reason = typeof inTimeOrData === "object" && inTimeOrData !== null ? inTimeOrData.reason : (maybeReason || "");
+
+    const updatedTicket: AttendanceTicket = {
+      ...targetTicket,
+      resolutionPath: "ATTENDANCE_CORRECTION",
+      actualTime: actualIn && actualOut ? `${actualIn} - ${actualOut}` : (actualIn || targetTicket.actualTime || "08:00 - 15:00"),
+      reason: reason?.trim() || targetTicket.reason,
+    };
+
+    setAttendanceTickets((prev) =>
+      prev.map((t) => (t.id === ticketId ? updatedTicket : t))
+    );
+
+    return {
+      success: true,
+      message: "Đã gửi giải trình bổ sung công thành công!",
+      ticket: updatedTicket,
+    };
+  };
+
+  const togglePeriodLockForTicket = (ticketId: string) => {
+    setAttendanceTickets((prev) =>
+      prev.map((t) =>
+        t.id === ticketId
+          ? {
+              ...t,
+              isPeriodLocked: !t.isPeriodLocked,
+            }
+          : t
+      )
+    );
+  };
+
   const markBriefingAsRead = (id: string) => {
     setBriefings((prev) =>
       prev.map((b) => (b.id === id ? { ...b, isRead: true } : b))
@@ -1532,6 +1794,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         briefings,
         markBriefingAsRead,
         acknowledgeBriefing,
+        attendanceSessions,
+        recordCheckIn,
+        recordCheckOut,
         attendanceTickets,
         submitAttendanceTicket,
         cancelPendingAttendanceTicket,
@@ -1542,6 +1807,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         acceptSandwichHandshake,
         rejectSandwichHandshake,
         transitionShiftToMissingBoth,
+        createBackdatedLeaveFromMissingBoth,
+        commitAttendanceCorrection,
+        togglePeriodLockForTicket,
       }}
     >
       {children}

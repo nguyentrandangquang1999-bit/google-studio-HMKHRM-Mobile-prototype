@@ -67,44 +67,44 @@ const renderStatus = (status: string) => {
   switch (status) {
     case "approved":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-green-700 bg-green-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>Đã duyệt
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Đã duyệt
         </span>
       );
     case "pending":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
           <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Chờ duyệt
         </span>
       );
     case "assigned":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>Gán tay
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-[#558BAD] bg-[#F0F6FA] border border-[#558BAD]/30 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#558BAD]"></span>Gán tay
         </span>
       );
     case "full":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-red-700 bg-red-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200/80 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
           <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>Đã đầy
         </span>
       );
     case "rejected":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-red-700 bg-red-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200/80 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
           <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>Từ chối
         </span>
       );
     case "cancelled":
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-700 bg-gray-200 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Huỷ đăng ký
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-700 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>Huỷ đăng ký
         </span>
       );
     default:
       return (
-        <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-700 bg-gray-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Còn trống
+        <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-600 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-soft">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>Còn trống
         </span>
       );
   }
@@ -415,19 +415,19 @@ export default function Schedule() {
                           className={cn(
                             "w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold transition-all relative overflow-hidden",
                             isSelected
-                              ? "bg-slate-900 text-white shadow-lg shadow-slate-200"
+                              ? "bg-[#558BAD] text-white shadow-md shadow-[#558BAD]/30"
                               : "bg-slate-50 text-slate-600 group-hover:bg-slate-100",
                           )}
                         >
                           {format(day, "d")}
                           {isSelected && (
-                            <div className="absolute bottom-0 left-0 w-full h-[3px] bg-emerald-400"></div>
+                            <div className="absolute bottom-0 left-0 w-full h-[3px] bg-white"></div>
                           )}
                         </div>
                         <div
                           className={cn(
                             "w-1.5 h-1.5 rounded-full transition-colors",
-                            getDayDotVariant(day).replace("bg-success", "bg-emerald-500"),
+                            getDayDotVariant(day).replace("bg-success", "bg-[#558BAD]"),
                           )}
                         />
                       </div>
@@ -446,7 +446,7 @@ export default function Schedule() {
                       placeholder="Tìm theo tên ca"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                      className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all placeholder:text-slate-400 text-slate-900"
                     />
                     {searchQuery && (
                       <button
@@ -467,7 +467,7 @@ export default function Schedule() {
                     className={cn(
                       "flex items-center justify-center w-[42px] h-[42px] rounded-xl border transition-all shrink-0",
                       selectedStatuses.length > 0 || timeFrom || timeTo
-                        ? "bg-indigo-50 border-indigo-200 text-indigo-600"
+                        ? "bg-[#F0F6FA] border-[#558BAD]/30 text-[#558BAD]"
                         : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                     )}
                   >
@@ -488,18 +488,18 @@ export default function Schedule() {
                         case "cancelled": label = "Huỷ đăng ký"; break;
                       }
                       return (
-                        <span key={status} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-bold border border-indigo-100">
+                        <span key={status} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
                           {label}
-                          <button onClick={() => setSelectedStatuses(prev => prev.filter(s => s !== status))} className="hover:text-indigo-900">
+                          <button onClick={() => setSelectedStatuses(prev => prev.filter(s => s !== status))} className="hover:text-[#375A72]">
                             <X className="w-3 h-3" />
                           </button>
                         </span>
                       );
                     })}
                     {(timeFrom || timeTo) && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-bold border border-indigo-100">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
                         {timeFrom || "00:00"} - {timeTo || "23:59"}
-                        <button onClick={() => { setTimeFrom(""); setTimeTo(""); }} className="hover:text-indigo-900">
+                        <button onClick={() => { setTimeFrom(""); setTimeTo(""); }} className="hover:text-[#375A72]">
                           <X className="w-3 h-3" />
                         </button>
                       </span>
@@ -764,22 +764,20 @@ export default function Schedule() {
                           )}
 
                           {shift.requireHandshake && (
-                            <div className="mt-4 pt-4 border-t-2 border-dashed border-indigo-200">
-                              <div className="bg-gradient-to-br from-indigo-50 to-white border-2 border-indigo-100 shadow-sm rounded-xl p-4 flex flex-col relative overflow-hidden group-hover:border-indigo-300 transition-colors">
-                                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
-
+                            <div className="mt-4 pt-4 border-t border-slate-200">
+                              <div className="bg-[#F0F6FA] border border-[#558BAD]/30 shadow-soft rounded-xl p-4 flex flex-col relative overflow-hidden transition-colors">
                                 <div className="flex items-start gap-3 relative z-10 mb-3.5">
-                                  <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center shrink-0 border border-indigo-200 shadow-sm">
-                                    <AlertTriangle className="w-4 h-4 text-indigo-600" />
+                                  <div className="w-8 h-8 rounded-xl bg-[#558BAD]/10 flex items-center justify-center shrink-0 border border-[#558BAD]/20 shadow-soft">
+                                    <AlertTriangle className="w-4 h-4 text-[#558BAD]" />
                                   </div>
                                   <div>
-                                    <h4 className="text-[11px] font-extrabold text-indigo-900 uppercase tracking-widest leading-tight mb-1">
+                                    <h4 className="text-[11px] font-extrabold text-[#375A72] uppercase tracking-widest leading-tight mb-1">
                                       Lệnh Điều Phát Sinh
                                     </h4>
-                                    <p className="text-xs text-gray-600 font-medium leading-relaxed pr-2">
+                                    <p className="text-xs text-slate-600 font-medium leading-relaxed pr-2">
                                       Bạn cần xác nhận để mở khóa Check-in tại Cửa
                                       hàng{" "}
-                                      <span className="font-bold text-gray-900">
+                                      <span className="font-bold text-slate-900">
                                         {shift.storeName}
                                       </span>
                                       .
@@ -789,7 +787,7 @@ export default function Schedule() {
 
                                 <button
                                   onClick={() => acknowledgeDispatch(shift.id)}
-                                  className="relative z-10 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg text-[11px] uppercase tracking-wider transition-all shadow-md shadow-indigo-600/20 active:scale-[0.98] flex items-center justify-center gap-2"
+                                  className="relative z-10 w-full bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold py-2.5 rounded-xl text-[11px] uppercase tracking-wider transition-all shadow-md shadow-[#558BAD]/20 active:scale-[0.98] flex items-center justify-center gap-2"
                                 >
                                   <CheckCircle2 className="w-4 h-4" /> Xác nhận
                                   Handshake
@@ -1251,10 +1249,10 @@ export default function Schedule() {
                 </div>
               </div>
 
-              <div className="pt-4 flex gap-3 pb-safe bg-white w-full sticky bottom-0 z-10 border-t border-gray-50">
+              <div className="pt-4 flex gap-3 pb-safe bg-white w-full sticky bottom-0 z-10 border-t border-slate-100">
                 <button
                   onClick={() => setShowSwap(null)}
-                  className="flex-[1] py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all shadow-sm"
+                  className="flex-[1] py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-all shadow-soft"
                 >
                   Huỷ
                 </button>
@@ -1266,9 +1264,9 @@ export default function Schedule() {
                     });
                     setShowSwap(null);
                   }}
-                  className="flex-[2] py-4 bg-black text-white font-bold rounded-xl flex items-center justify-center transition-all shadow-md"
+                  className="flex-[2] py-3.5 bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold rounded-xl flex items-center justify-center transition-all shadow-md shadow-[#558BAD]/20"
                 >
-                  <Send className="w-5 h-5 mr-2" /> Gửi yêu cầu
+                  <Send className="w-4 h-4 mr-2" /> Gửi yêu cầu
                 </button>
               </div>
             </motion.div>
@@ -1487,10 +1485,10 @@ export default function Schedule() {
                           }
                         }}
                         className={cn(
-                          "flex-[2] py-4 font-bold rounded-xl flex items-center justify-center transition-all shadow-sm",
+                          "flex-[2] py-3.5 font-bold rounded-xl flex items-center justify-center transition-all shadow-md",
                           needsSlotSelection
-                            ? "bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200"
-                            : "bg-black text-white hover:bg-gray-900 active:scale-[0.98]",
+                            ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+                            : "bg-[#558BAD] hover:bg-[#446E8A] text-white shadow-[#558BAD]/20 active:scale-[0.98]",
                         )}
                       >
                         {needsSlotSelection
@@ -1680,7 +1678,7 @@ export default function Schedule() {
                     
                     setIsFilterModalOpen(false);
                   }}
-                  className="flex-[2] py-3.5 bg-slate-900 text-white hover:bg-slate-800 font-bold rounded-xl transition-all shadow-md active:scale-[0.98]"
+                  className="flex-[2] py-3.5 bg-[#558BAD] text-white hover:bg-[#446E8A] font-bold rounded-xl transition-all shadow-md shadow-[#558BAD]/20 active:scale-[0.98]"
                 >
                   Áp dụng
                 </button>

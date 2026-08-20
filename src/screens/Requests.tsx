@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useApp, LeaveRequestType } from "@/context/AppContext";
+import { useApp, LeaveRequestType, AttendanceTicket } from "@/context/AppContext";
 import { format } from "date-fns";
 import { vi } from "date-fns/locale";
 import {
@@ -93,11 +93,12 @@ const mockSentRequests = [
 
 const mockReceivedRequests = [
   {
-    id: "RQ-SYS-04",
+    id: "TK-OUT-032",
     type: "forgot_out",
     title: "Bổ sung Check-out",
-    date: "Tối qua",
+    date: "30/07/2026 13:45",
     status: "action-needed",
+    statusLabel: "CẦN XỬ LÝ",
     icon: AlertTriangle,
     color: "text-red-600",
     isActionable: true,
@@ -107,17 +108,18 @@ const mockReceivedRequests = [
     },
   },
   {
-    id: "RQ-SYS-05",
+    id: "TK-IN-017",
     type: "forgot_in",
     title: "Bổ sung Check-in",
-    date: "Sáng nay",
+    date: "21/05/2026 08:15",
     status: "action-needed",
+    statusLabel: "CẦN XỬ LÝ",
     icon: AlertTriangle,
     color: "text-red-600",
     isActionable: true,
     detail: {
       peer: "Hệ thống báo lỗi",
-      msg: "Hệ thống không ghi nhận giờ Check-in ca sáng (21/05).",
+      msg: "Hệ thống không ghi nhận giờ Check-in ca sáng.",
     },
   },
   {
@@ -161,6 +163,9 @@ export default function Requests() {
     attendanceTickets,
     submitAttendanceTicket,
     cancelPendingAttendanceTicket,
+    createBackdatedLeaveFromMissingBoth,
+    commitAttendanceCorrection,
+    togglePeriodLockForTicket,
   } = useApp();
   
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
@@ -180,6 +185,19 @@ export default function Requests() {
   const [attTime, setAttTime] = useState("");
   const [attReason, setAttReason] = useState("");
   const [useAnnualLeaveIntent, setUseAnnualLeaveIntent] = useState(false);
+
+  // Missing Both -> Path A: Attendance Correction State
+  const [showAttendanceCorrectionModal, setShowAttendanceCorrectionModal] = useState(false);
+  const [correctionTicket, setCorrectionTicket] = useState<AttendanceTicket | null>(null);
+  const [correctionInTime, setCorrectionInTime] = useState("08:00");
+  const [correctionOutTime, setCorrectionOutTime] = useState("15:00");
+  const [correctionReason, setCorrectionReason] = useState("");
+
+  // Missing Both -> Path B: Backdated Leave State
+  const [showBackdatedLeaveModal, setShowBackdatedLeaveModal] = useState(false);
+  const [backdatedTicket, setBackdatedTicket] = useState<AttendanceTicket | null>(null);
+  const [backdatedLeaveType, setBackdatedLeaveType] = useState<LeaveRequestType | null>("ANNUAL_LEAVE");
+  const [backdatedReason, setBackdatedReason] = useState("");
 
   // MOB-05 Cancel Approved Leave State
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -451,7 +469,8 @@ export default function Requests() {
   const combinedSentRequests = [
     ...(sentRevs || []).filter((r) => r && r.type !== "leave"),
     ...(leaveRequests || []).map((lr) => {
-      const typeLabel = getLeaveTypeLabel(lr.type);
+      const isBackdated = lr.requestMode === "BACKDATED_MISSING_BOTH";
+      const typeLabel = isBackdated ? "Nghỉ đột xuất" : getLeaveTypeLabel(lr.type);
       const statusLabel = getLeaveStatusLabel(lr.status);
 
       let mappedStatus = "pending-manager";
@@ -572,6 +591,9 @@ export default function Requests() {
           attachment: lr.attachment,
           rawType: lr.type,
           rawStatus: lr.status,
+          requestMode: lr.requestMode,
+          sourceTicketId: lr.sourceTicketId,
+          sourceType: lr.sourceType,
         },
         originalRequest: lr,
       };
@@ -651,8 +673,6 @@ export default function Requests() {
     return 0;
   });
 
-  const currentList = activeTab === "sent" ? combinedSentRequests : receivedRevs;
-
   const renderStatus = (status: string, statusLabel?: string) => {
     switch (status) {
       case "approved":
@@ -708,7 +728,13 @@ export default function Requests() {
       case "action-needed":
         return (
           <span className="bg-red-600 text-white border border-red-700 text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm shadow-red-200">
-            Sự Cố
+            Cần xử lý
+          </span>
+        );
+      case "locked":
+        return (
+          <span className="bg-red-50 text-red-700 border border-red-200 text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">
+            {statusLabel || "Kỳ công đã khóa"}
           </span>
         );
       default:
@@ -720,10 +746,65 @@ export default function Requests() {
     }
   };
 
+  const actionableMissingBothTickets = (attendanceTickets || [])
+    .filter((att) => att.type === "missing_both")
+    .map((att) => {
+      let mappedStatus = "action-needed";
+      let statusLabel = "Cần xử lý";
+      if (att.isPeriodLocked) {
+        mappedStatus = "locked";
+        statusLabel = "Kỳ công đã khóa";
+      } else if (att.resolutionPath === "BACKDATED_LEAVE") {
+        mappedStatus = "pending-manager";
+        statusLabel = "Chờ duyệt nghỉ phép";
+      } else if (att.resolutionPath === "ATTENDANCE_CORRECTION") {
+        mappedStatus = "pending-manager";
+        statusLabel = "Chờ duyệt bổ sung công";
+      }
+
+      return {
+        id: att.id,
+        type: "missing_both",
+        title: "Thiếu dữ liệu chấm công (Missing Both)",
+        date: formatDateDDMMYYYY(att.date),
+        status: mappedStatus,
+        statusLabel: statusLabel,
+        icon: AlertTriangle,
+        color: "text-red-600",
+        isActionable: !att.isPeriodLocked && !att.resolutionPath,
+        resolutionPath: att.resolutionPath,
+        linkedLeaveRequestId: att.linkedLeaveRequestId,
+        isPeriodLocked: att.isPeriodLocked,
+        ticket: att,
+        detail: {
+          peer: "Hệ thống tự động ghi nhận",
+          msg: "Hệ thống không ghi nhận dữ liệu Check-in và Check-out cho ca làm việc này.",
+          relatedShift: att.relatedShift,
+          hours: att.relatedShift?.hours || 7,
+          minutes: (att.relatedShift?.hours || 7) * 60,
+          reason: att.reason,
+        },
+      };
+    });
+
+  const currentList = activeTab === "sent" 
+    ? combinedSentRequests 
+    : [
+        ...actionableMissingBothTickets,
+        ...receivedRevs.filter((r) => r.type !== "missing_both"),
+      ];
+
   const [filterType, setFilterType] = useState<string>("all");
-  const filteredList = currentList.filter(
-    (req) => filterType === "all" || req.type === filterType,
-  );
+  const filteredList = currentList.filter((req) => {
+    if (filterType === "all") return true;
+    if (filterType === "leave") return req.type === "leave";
+    if (filterType === "swap") return req.type === "swap";
+    if (filterType === "missing_both") return req.type === "missing_both";
+    if (filterType === "forgot_in") return req.type === "forgot_in";
+    if (filterType === "forgot_out") return req.type === "forgot_out";
+    if (filterType === "attendance") return req.type === "attendance_ticket" || req.type === "missing_both" || req.type === "forgot_in" || req.type === "forgot_out";
+    return req.type === filterType;
+  });
 
   return (
     <div className="flex flex-col h-full bg-background relative pb-20">
@@ -752,14 +833,14 @@ export default function Requests() {
             className={cn(
               "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
               activeTab === "received"
-                ? "bg-transparent text-gray-900 border-gray-900"
+                ? "bg-primary/10 text-primary border-primary"
                 : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
             )}
           >
             <Inbox
               className={cn(
                 "w-4 h-4",
-                activeTab === "received" ? "text-gray-900" : "text-gray-400",
+                activeTab === "received" ? "text-primary" : "text-gray-400",
               )}
             />{" "}
             Xử lý
@@ -775,14 +856,14 @@ export default function Requests() {
             className={cn(
               "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
               activeTab === "sent"
-                ? "bg-transparent text-gray-900 border-gray-900"
+                ? "bg-primary/10 text-primary border-primary"
                 : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
             )}
           >
             <Send
               className={cn(
                 "w-4 h-4",
-                activeTab === "sent" ? "text-gray-900" : "text-gray-400",
+                activeTab === "sent" ? "text-primary" : "text-gray-400",
               )}
             />{" "}
             Đã gửi
@@ -796,8 +877,8 @@ export default function Requests() {
             className={cn(
               "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
               filterType === "all"
-                ? "bg-gray-900 text-white border-gray-900"
-                : "bg-white text-gray-500 border-gray-200",
+                ? "bg-primary text-white border-primary shadow-sm"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
             )}
           >
             Tất cả
@@ -810,7 +891,7 @@ export default function Requests() {
                   "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
                   filterType === "forgot_in"
                     ? "bg-red-50 text-red-600 border-red-200"
-                    : "bg-white text-gray-500 border-gray-200",
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
                 )}
               >
                 Thiếu Check-in
@@ -821,7 +902,7 @@ export default function Requests() {
                   "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
                   filterType === "forgot_out"
                     ? "bg-red-50 text-red-600 border-red-200"
-                    : "bg-white text-gray-500 border-gray-200",
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
                 )}
               >
                 Thiếu Check-out
@@ -833,8 +914,8 @@ export default function Requests() {
             className={cn(
               "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
               filterType === "swap"
-                ? "bg-blue-50 text-blue-600 border-blue-200"
-                : "bg-white text-gray-500 border-gray-200",
+                ? "bg-primary text-white border-primary shadow-sm"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
             )}
           >
             Đổi ca
@@ -844,8 +925,8 @@ export default function Requests() {
             className={cn(
               "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
               filterType === "leave"
-                ? "bg-gray-100 text-gray-900 border-gray-300"
-                : "bg-white text-gray-500 border-gray-200",
+                ? "bg-primary text-white border-primary shadow-sm"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
             )}
           >
             Nghỉ phép
@@ -855,37 +936,37 @@ export default function Requests() {
 
       <div className="flex-1 p-4 overflow-y-auto">
         {/* MOB-01: Thẻ Số dư phép năm (Leave Balance Card) */}
-        <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-sm relative overflow-hidden border border-slate-800 mb-4">
+        <div className="bg-gradient-to-br from-[#416C87] to-[#558BAD] text-white rounded-2xl p-4 shadow-sm relative overflow-hidden border border-[#558BAD]/30 mb-4">
           <div className="flex justify-between items-start mb-3">
             <div>
-              <div className="flex items-center gap-1.5 text-slate-300 text-xs font-semibold uppercase tracking-wider">
-                <Umbrella className="w-4 h-4 text-blue-400" />
+              <div className="flex items-center gap-1.5 text-white/80 text-xs font-semibold uppercase tracking-wider">
+                <Umbrella className="w-4 h-4 text-white" />
                 <span>Số dư phép năm</span>
               </div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-3xl font-extrabold tracking-tight text-white">
                   {leaveBalance.available}
                 </span>
-                <span className="text-xs font-medium text-slate-300">ngày khả dụng</span>
+                <span className="text-xs font-medium text-white/80">ngày khả dụng</span>
               </div>
             </div>
             <button
               onClick={() => setShowLedgerModal(true)}
-              className="px-3 py-1.5 bg-white/10 hover:bg-white/20 active:bg-white/30 text-white text-xs font-bold rounded-lg border border-white/20 transition-all flex items-center gap-1.5 backdrop-blur-sm cursor-pointer"
+              className="px-3 py-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 text-white text-xs font-bold rounded-lg border border-white/30 transition-all flex items-center gap-1.5 backdrop-blur-sm cursor-pointer"
             >
-              <FileText className="w-3.5 h-3.5 text-blue-400" />
+              <FileText className="w-3.5 h-3.5 text-white" />
               <span>Lịch sử phép</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800 text-xs">
-            <div className="bg-slate-800/60 rounded-xl p-2.5">
-              <span className="text-slate-400 block text-[10px] font-medium uppercase tracking-wider">Số dư quỹ phép</span>
+          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/20 text-xs">
+            <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
+              <span className="text-white/70 block text-[10px] font-medium uppercase tracking-wider">Số dư quỹ phép</span>
               <span className="text-sm font-bold text-white">{leaveBalance.currentBalance} ngày</span>
             </div>
-            <div className="bg-slate-800/60 rounded-xl p-2.5">
-              <span className="text-amber-300/80 block text-[10px] font-medium uppercase tracking-wider">Đang giữ chỗ</span>
-              <span className="text-sm font-bold text-amber-400">{leaveBalance.reserved} ngày</span>
+            <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
+              <span className="text-amber-200 block text-[10px] font-medium uppercase tracking-wider">Đang giữ chỗ</span>
+              <span className="text-sm font-bold text-amber-300">{leaveBalance.reserved} ngày</span>
             </div>
           </div>
         </div>
@@ -926,12 +1007,12 @@ export default function Requests() {
                         : "border-gray-100",
                   )}
                 >
-                  <div className="flex justify-between items-start mb-4">
+                  <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center gap-3">
                       <div
                         className={cn(
                           "w-10 h-10 border shadow-sm rounded-full flex items-center justify-center shrink-0",
-                          req.type === "forgot_in" || req.type === "forgot_out"
+                          req.type === "forgot_in" || req.type === "forgot_out" || req.type === "missing_both"
                             ? "bg-red-50 border-red-200 text-red-600"
                             : "bg-gray-50 border-gray-200 text-gray-600",
                         )}
@@ -945,17 +1026,32 @@ export default function Requests() {
                             <span className="w-1.5 h-1.5 bg-blue-500 rounded-full"></span>
                           )}
                           {(req.type === "forgot_in" ||
-                            req.type === "forgot_out") && (
+                            req.type === "forgot_out" ||
+                            req.type === "missing_both") && (
                             <span className="w-1.5 h-1.5 animate-pulse bg-red-500 rounded-full"></span>
                           )}
                         </h3>
-                        <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">
-                          {req.detail?.peer && (
-                            <span className="text-gray-400 mr-1.5">
-                              TỪ: {req.detail.peer}
-                            </span>
+                        <p className="text-[11px] text-gray-500 font-medium">
+                          {req.type === "swap" ? (
+                            <>
+                              {req.detail?.peer && (
+                                <span className="text-gray-400 mr-1">
+                                  TỪ: {req.detail.peer} •
+                                </span>
+                              )}
+                              <span>{req.date}</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>{req.date}</span>
+                              {req.id && (
+                                <>
+                                  <span className="mx-1 text-gray-400">•</span>
+                                  <span>Mã ticket: <span className="font-semibold text-gray-700">{req.id}</span></span>
+                                </>
+                              )}
+                            </>
                           )}
-                          • <span className="ml-1.5">{req.date}</span>
                         </p>
                       </div>
                     </div>
@@ -964,20 +1060,169 @@ export default function Requests() {
 
                   {(req.type === "forgot_in" || req.type === "forgot_out") &&
                     req.detail && (
-                      <div className="bg-white border-2 border-red-50 rounded-xl p-3 mb-3 text-sm">
-                        <p className="text-xs text-red-800 font-bold leading-relaxed mb-3">
+                      <div className="bg-white border-2 border-red-50 rounded-xl p-3 mb-3 text-sm space-y-3">
+                        <p className="text-xs text-red-900 font-medium leading-relaxed bg-red-50/60 p-2.5 rounded-lg border border-red-100">
                           {req.detail.msg}
                         </p>
                         <button
                           onClick={() =>
                             navigate(`/attendance?scenario=${req.type}`)
                           }
-                          className="bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 px-4 rounded-lg text-[11px] uppercase tracking-wider transition-all shadow-sm active:scale-[0.98] w-full flex items-center justify-center gap-2"
+                          className="bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 px-4 rounded-lg text-xs tracking-wider transition-all shadow-sm active:scale-[0.98] w-full flex items-center justify-center gap-1.5"
                         >
-                          Bổ sung dữ liệu <ChevronRight className="w-3 h-3" />
+                          <span>Bổ sung dữ liệu</span>
                         </button>
                       </div>
                     )}
+
+                  {req.type === "missing_both" && (
+                    <div className="bg-white border-2 border-red-50 rounded-xl p-3 mb-3 space-y-3">
+                      <p className="text-xs text-red-900 font-medium leading-relaxed bg-red-50/60 p-2.5 rounded-lg border border-red-100">
+                        {req.detail.msg || "Hệ thống không ghi nhận dữ liệu Check-in và Check-out cho ca làm việc này."}
+                      </p>
+
+                      {req.detail?.relatedShift && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs space-y-1">
+                          <div className="flex items-center justify-between font-bold text-slate-900">
+                            <span>{req.detail.relatedShift.shiftName} ({req.detail.relatedShift.timeStr})</span>
+                            <span className="text-slate-700 bg-white px-2 py-0.5 rounded text-[11px] border border-slate-200 font-semibold">
+                              {req.detail.hours} giờ ({req.detail.minutes} phút)
+                            </span>
+                          </div>
+                          <p className="text-slate-600 font-medium text-[11px]">
+                            🏬 {req.detail.relatedShift.storeName}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Condition 1: Period Locked */}
+                      {req.isPeriodLocked && (
+                        <div className="space-y-2">
+                          <div className="p-2.5 bg-red-100/90 border border-red-300 rounded-lg text-xs font-bold text-red-900 flex items-center gap-2">
+                            <span>⚠️</span> Kỳ công đã khóa. Không thể xử lý yêu cầu này.
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 opacity-50 cursor-not-allowed">
+                            <button disabled className="py-2.5 bg-gray-100 border border-gray-200 text-gray-400 font-bold rounded-lg text-xs cursor-not-allowed">
+                              Bổ sung dữ liệu
+                            </button>
+                            <button disabled className="py-2.5 bg-gray-100 border border-gray-200 text-gray-400 font-bold rounded-lg text-xs cursor-not-allowed">
+                              Tạo nghỉ phép
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Condition 2: Routed to Backdated Leave */}
+                      {!req.isPeriodLocked && req.resolutionPath === "BACKDATED_LEAVE" && (
+                        <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg text-xs space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-bold text-slate-900 flex items-center gap-1">
+                                <span className="text-primary font-bold">✓</span> Đã tạo yêu cầu nghỉ đột xuất
+                              </p>
+                              <p className="text-slate-600 text-[11px]">
+                                Đang chờ Quản lý xử lý. Không tạo giữ chỗ quỹ phép.
+                              </p>
+                            </div>
+                            <span className="px-2 py-0.5 bg-primary/10 text-primary rounded font-bold text-[10px]">
+                              Chờ duyệt
+                            </span>
+                          </div>
+                          {req.linkedLeaveRequestId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const matchedReq = combinedSentRequests.find(r => r.id === req.linkedLeaveRequestId);
+                                if (matchedReq) {
+                                  setSelectedLeave(matchedReq);
+                                } else {
+                                  setToast({ message: `Mã đơn nghỉ đột xuất: ${req.linkedLeaveRequestId}`, type: "info" });
+                                }
+                              }}
+                              className="w-full py-2 bg-primary hover:bg-primary/90 active:scale-[0.98] text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5"
+                            >
+                              <span>Xem yêu cầu</span> <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Condition 3: Routed to Attendance Correction */}
+                      {!req.isPeriodLocked && req.resolutionPath === "ATTENDANCE_CORRECTION" && (
+                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-bold text-emerald-950 flex items-center gap-1">
+                                <span>✓</span> Đã gửi bổ sung dữ liệu chấm công
+                              </p>
+                              <p className="text-emerald-800 text-[11px]">
+                                Đang chờ Quản lý duyệt chấm công.
+                              </p>
+                            </div>
+                            <span className="px-2 py-0.5 bg-emerald-200 text-emerald-900 rounded font-bold text-[10px]">
+                              Chờ duyệt công
+                            </span>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLeave({
+                                id: req.id,
+                                type: "attendance_ticket",
+                                title: "Bổ sung dữ liệu chấm công",
+                                date: req.date,
+                                status: "pending-manager",
+                                statusLabel: "Chờ duyệt",
+                                detail: {
+                                  reason: req.ticket?.reason || req.detail?.reason || "Bổ sung giờ vào ra thực tế",
+                                  submittedAt: req.ticket?.submittedAt instanceof Date ? format(req.ticket.submittedAt, "HH:mm, dd/MM/yyyy", { locale: vi }) : "N/A",
+                                  branch: req.detail?.relatedShift?.storeName || "HMK Nguyễn Trãi",
+                                  actualTime: req.ticket?.actualTime || "08:00 - 15:00",
+                                  relatedShift: req.detail?.relatedShift,
+                                  useAnnualLeaveIntent: false,
+                                  rawStatus: "PENDING",
+                                }
+                              });
+                            }}
+                            className="w-full py-2 bg-primary hover:bg-primary/90 active:scale-[0.98] text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5"
+                          >
+                            <span>Xem chi tiết bổ sung công</span> <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Condition 4: No path chosen yet (Both actions active and mutually exclusive) */}
+                      {!req.isPeriodLocked && !req.resolutionPath && (
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCorrectionTicket(req.ticket);
+                              setCorrectionInTime("08:00");
+                              setCorrectionOutTime("15:00");
+                              setCorrectionReason(req.ticket?.reason || "");
+                              setShowAttendanceCorrectionModal(true);
+                            }}
+                            className="py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs shadow-sm transition-all active:scale-[0.98] flex items-center justify-center gap-1.5"
+                          >
+                            <span>Bổ sung dữ liệu</span>
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setBackdatedTicket(req.ticket);
+                              setBackdatedLeaveType(user?.annualLeaveEligible ? "ANNUAL_LEAVE" : null);
+                              setBackdatedReason("");
+                              setShowBackdatedLeaveModal(true);
+                            }}
+                            className="py-2.5 px-3 bg-primary hover:bg-primary/90 text-white font-bold rounded-lg text-xs shadow-sm transition-all active:scale-[0.98] flex items-center justify-center gap-1.5"
+                          >
+                            <span>Tạo nghỉ phép</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {req.type === "swap" && req.detail && (
                     <div className="bg-gray-50/50 border-2 border-gray-100 rounded-xl p-4 mb-3 text-sm">
@@ -1033,7 +1278,7 @@ export default function Requests() {
                         </button>
                         <button
                           onClick={() => handleAction(req.id, "accept")}
-                          className="flex-[2] py-2.5 bg-black hover:bg-gray-900 text-white font-bold rounded-xl shadow-sm text-xs flex items-center justify-center transition-all"
+                          className="flex-[2] py-2.5 bg-primary hover:bg-primary/90 text-white font-bold rounded-xl shadow-sm text-xs flex items-center justify-center transition-all"
                         >
                           <CheckCircle2 className="w-4 h-4 mr-1.5" /> Đồng ý đổi
                         </button>
@@ -1065,7 +1310,7 @@ export default function Requests() {
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 w-full max-w-md pointer-events-none z-40 px-6 flex justify-end">
           <button
             onClick={() => setShowCreateModal(true)}
-            className="pointer-events-auto px-6 h-14 bg-[#4F39F6] rounded-full shadow-lg flex items-center justify-center text-white active:scale-95 transition-all hover:opacity-90 shadow-[#4F39F6]/20 gap-2"
+            className="pointer-events-auto px-6 h-14 bg-primary rounded-full shadow-lg flex items-center justify-center text-white active:scale-95 transition-all hover:bg-primary/90 shadow-primary/20 gap-2"
           >
             <Plus className="w-5 h-5" />
             <span className="font-bold text-sm">Tạo yêu cầu</span>
@@ -1129,7 +1374,7 @@ export default function Requests() {
                       className={cn(
                         "px-4 py-2 text-xs font-bold rounded-full transition-all border shrink-0 whitespace-nowrap",
                         reqType === t.id
-                          ? "bg-transparent text-gray-900 border-gray-900"
+                          ? "bg-primary/10 text-primary border-primary"
                           : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
                       )}
                     >
@@ -1155,7 +1400,7 @@ export default function Requests() {
                         <select 
                           value={leaveType}
                           onChange={(e) => setLeaveType(e.target.value as LeaveRequestType)}
-                          className="w-full bg-white border-2 border-gray-100 rounded-xl px-4 py-4 text-sm font-bold focus:outline-none focus:border-black text-gray-900 transition-all appearance-none">
+                          className="w-full bg-white border-2 border-gray-100 rounded-xl px-4 py-4 text-sm font-bold focus:outline-none focus:border-primary text-gray-900 transition-all appearance-none">
                           <option value="ANNUAL_LEAVE" disabled={!user?.annualLeaveEligible}>
                             Phép năm {!user?.annualLeaveEligible ? "(Chưa đủ điều kiện)" : `— Khả dụng ${leaveBalance.available} ngày`}
                           </option>
@@ -1237,7 +1482,7 @@ export default function Requests() {
                           onChange={(e) => setLeaveReason(e.target.value)}
                           required
                           placeholder="Mô tả tóm tắt lý do xin nghỉ..."
-                          className="w-full bg-white border-2 border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:outline-none focus:border-black resize-none transition-all placeholder:text-gray-400"
+                          className="w-full bg-white border-2 border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:outline-none focus:border-primary resize-none transition-all placeholder:text-gray-400"
                         ></textarea>
                       </div>
 
@@ -1628,7 +1873,7 @@ export default function Requests() {
                             "w-full py-4 border font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md",
                             isLeaveDisabled
                               ? "bg-gray-300 border-gray-300 text-gray-500 cursor-not-allowed"
-                              : "bg-black border-black hover:bg-gray-900 text-white"
+                              : "bg-primary border-primary hover:bg-primary/90 text-white"
                           )}
                         >
                           <Send className="w-5 h-5" /> GỬI YÊU CẦU
@@ -1848,10 +2093,17 @@ export default function Requests() {
                           <span>Số phép yêu cầu:</span>
                           <span className="font-bold">{selectedLeave.detail.requestedLeaveDays} ngày</span>
                         </div>
-                        <div className="flex justify-between text-amber-800">
-                          <span>Phép đang giữ chỗ của yêu cầu này:</span>
-                          <span className="font-bold">{selectedLeave.detail.reservedDays || selectedLeave.detail.requestedLeaveDays} ngày</span>
-                        </div>
+                        {selectedLeave.detail?.requestMode === "BACKDATED_MISSING_BOTH" || selectedLeave.originalRequest?.requestMode === "BACKDATED_MISSING_BOTH" ? (
+                          <div className="flex justify-between text-purple-800">
+                            <span>Trạng thái giữ chỗ:</span>
+                            <span className="font-bold">Không tạo giữ chỗ</span>
+                          </div>
+                        ) : (
+                          <div className="flex justify-between text-amber-800">
+                            <span>Phép đang giữ chỗ của yêu cầu này:</span>
+                            <span className="font-bold">{selectedLeave.detail.reservedDays || selectedLeave.detail.requestedLeaveDays} ngày</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-gray-700 border-t border-amber-200 pt-1">
                           <span>Số dư khả dụng hiện tại:</span>
                           <span className="font-bold text-blue-800">{leaveBalance.available} ngày</span>
@@ -1859,18 +2111,31 @@ export default function Requests() {
                       </div>
                     </div>
 
-                    <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs font-medium text-blue-900 flex items-start gap-2">
-                      <span className="text-base shrink-0">ℹ️</span>
-                      <p className="leading-relaxed">Yêu cầu đang chờ duyệt. Số phép tương ứng đang được giữ chỗ và chưa bị trừ chính thức.</p>
-                    </div>
+                    {selectedLeave.detail?.requestMode === "BACKDATED_MISSING_BOTH" || selectedLeave.originalRequest?.requestMode === "BACKDATED_MISSING_BOTH" ? (
+                      <div className="p-3 bg-purple-50 border border-purple-100 rounded-xl text-xs font-medium text-purple-900 flex items-start gap-2">
+                        <span className="text-base shrink-0">ℹ️</span>
+                        <p className="leading-relaxed">
+                          Yêu cầu nghỉ đột xuất không tạo giữ chỗ phép. Quỹ phép chỉ được trừ nếu Quản lý duyệt theo hình thức Phép năm.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs font-medium text-blue-900 flex items-start gap-2">
+                        <span className="text-base shrink-0">ℹ️</span>
+                        <p className="leading-relaxed">Yêu cầu đang chờ duyệt. Số phép tương ứng đang được giữ chỗ và chưa bị trừ chính thức.</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* --- PENDING UNPAID LEAVE INFO --- */}
                 {(selectedLeave.status === "pending-manager" || selectedLeave.detail.rawStatus === "PENDING") && selectedLeave.detail.rawType === "UNPAID_LEAVE" && (
                   <div className="p-3.5 bg-sky-50 border border-sky-200 rounded-xl text-xs font-medium text-sky-900 flex items-center gap-2">
-                    <span className="text-base">ℹ️</span>
-                    <p>Nghỉ không lương không sử dụng quỹ phép năm.</p>
+                    <span className="text-base shrink-0">ℹ️</span>
+                    <p>
+                      {selectedLeave.detail?.requestMode === "BACKDATED_MISSING_BOTH" || selectedLeave.originalRequest?.requestMode === "BACKDATED_MISSING_BOTH"
+                        ? "Nghỉ không lương không sử dụng quỹ phép năm. Khi được duyệt, số dư phép năm của bạn không thay đổi."
+                        : "Nghỉ không lương không sử dụng quỹ phép năm."}
+                    </p>
                   </div>
                 )}
 
@@ -2028,48 +2293,62 @@ export default function Requests() {
                   </div>
                 )
               ) : (
-                (selectedLeave.status === "pending-manager" || selectedLeave.detail?.rawStatus === "PENDING" || selectedLeave.status === "approved" || selectedLeave.detail?.rawStatus === "APPROVED") && (
-                  <div className="absolute bottom-0 left-0 w-full bg-white flex p-4 pb-safe z-20 border-t border-gray-100 shadow-lg">
-                    {(selectedLeave.status === "pending-manager" || selectedLeave.detail?.rawStatus === "PENDING") && (
-                      <button
-                        onClick={() => {
-                          setPendingCancelTarget(selectedLeave);
-                          setShowPendingCancelModal(true);
-                        }}
-                        className="w-full py-3.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-sm rounded-xl transition-all border border-red-200 flex items-center justify-center gap-2"
-                      >
-                        <XCircle className="w-4 h-4" /> Hủy yêu cầu
-                      </button>
-                    )}
-                    {(selectedLeave.status === "approved" || selectedLeave.detail?.rawStatus === "APPROVED") && (
-                      (() => {
-                        const cancelReq = getCancelRequestForLeave(selectedLeave.id);
-                        if (cancelReq && cancelReq.status === "PENDING") {
+                (() => {
+                  const isBackdated = selectedLeave.detail?.requestMode === "BACKDATED_MISSING_BOTH" || selectedLeave.originalRequest?.requestMode === "BACKDATED_MISSING_BOTH";
+                  const isPending = selectedLeave.status === "pending-manager" || selectedLeave.detail?.rawStatus === "PENDING";
+                  const isApproved = selectedLeave.status === "approved" || selectedLeave.detail?.rawStatus === "APPROVED";
+
+                  if (isPending && isBackdated) {
+                    return null;
+                  }
+
+                  if (!isPending && !isApproved) {
+                    return null;
+                  }
+
+                  return (
+                    <div className="absolute bottom-0 left-0 w-full bg-white flex p-4 pb-safe z-20 border-t border-gray-100 shadow-lg">
+                      {isPending && !isBackdated && (
+                        <button
+                          onClick={() => {
+                            setPendingCancelTarget(selectedLeave);
+                            setShowPendingCancelModal(true);
+                          }}
+                          className="w-full py-3.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-sm rounded-xl transition-all border border-red-200 flex items-center justify-center gap-2"
+                        >
+                          <XCircle className="w-4 h-4" /> Hủy yêu cầu
+                        </button>
+                      )}
+                      {isApproved && (
+                        (() => {
+                          const cancelReq = getCancelRequestForLeave(selectedLeave.id);
+                          if (cancelReq && cancelReq.status === "PENDING") {
+                            return (
+                              <button
+                                disabled
+                                className="w-full py-3.5 bg-gray-100 text-gray-500 font-bold text-sm rounded-xl cursor-not-allowed border border-gray-200 flex items-center justify-center gap-2"
+                              >
+                                <Clock className="w-4 h-4 text-amber-500" /> Yêu cầu hủy đang chờ xử lý
+                              </button>
+                            );
+                          }
                           return (
                             <button
-                              disabled
-                              className="w-full py-3.5 bg-gray-100 text-gray-500 font-bold text-sm rounded-xl cursor-not-allowed border border-gray-200 flex items-center justify-center gap-2"
+                              onClick={() => {
+                                setCancelModalLeave(selectedLeave);
+                                setCancelReasonInput("");
+                                setShowCancelModal(true);
+                              }}
+                              className="w-full py-3.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 font-bold text-sm rounded-xl transition-all flex items-center justify-center gap-2"
                             >
-                              <Clock className="w-4 h-4 text-amber-500" /> Yêu cầu hủy đang chờ xử lý
+                              Yêu cầu hủy nghỉ phép
                             </button>
                           );
-                        }
-                        return (
-                          <button
-                            onClick={() => {
-                              setCancelModalLeave(selectedLeave);
-                              setCancelReasonInput("");
-                              setShowCancelModal(true);
-                            }}
-                            className="w-full py-3.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 font-bold text-sm rounded-xl transition-all flex items-center justify-center gap-2"
-                          >
-                            Yêu cầu hủy nghỉ phép
-                          </button>
-                        );
-                      })()
-                    )}
-                  </div>
-                )
+                        })()
+                      )}
+                    </div>
+                  );
+                })()
               )}
             </motion.div>
           </motion.div>
@@ -2213,7 +2492,7 @@ export default function Requests() {
             >
               <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-slate-50">
                 <div className="flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-blue-600" />
+                  <FileText className="w-5 h-5 text-primary" />
                   <h3 className="font-bold text-gray-900 text-base">Lịch sử phép năm</h3>
                 </div>
                 <button
@@ -2226,17 +2505,17 @@ export default function Requests() {
 
               <div className="p-4 space-y-4 overflow-y-auto flex-1">
                 {/* Balance Summary in Ledger */}
-                <div className="bg-slate-900 text-white rounded-xl p-3.5 flex justify-between items-center text-xs shadow-sm">
+                <div className="bg-gradient-to-br from-[#416C87] to-[#558BAD] text-white rounded-xl p-3.5 flex justify-between items-center text-xs shadow-sm">
                   <div>
-                    <span className="text-slate-400 block text-[10px] uppercase font-medium">Số dư quỹ phép</span>
+                    <span className="text-white/80 block text-[10px] uppercase font-medium">Số dư quỹ phép</span>
                     <span className="text-base font-bold text-white">{leaveBalance.currentBalance} ngày</span>
                   </div>
                   <div className="text-right">
-                    <span className="text-amber-300/80 block text-[10px] uppercase font-medium">Đang giữ chỗ</span>
+                    <span className="text-amber-200 block text-[10px] uppercase font-medium">Đang giữ chỗ</span>
                     <span className="text-base font-bold text-amber-300">{leaveBalance.reserved} ngày</span>
                   </div>
                   <div className="text-right">
-                    <span className="text-emerald-300/80 block text-[10px] uppercase font-medium">Khả dụng</span>
+                    <span className="text-emerald-200 block text-[10px] uppercase font-medium">Khả dụng</span>
                     <span className="text-base font-bold text-emerald-300">{leaveBalance.available} ngày</span>
                   </div>
                 </div>
@@ -2295,7 +2574,7 @@ export default function Requests() {
               <div className="p-3 bg-gray-50 border-t border-gray-100 text-center">
                 <button
                   onClick={() => setShowLedgerModal(false)}
-                  className="w-full py-2.5 bg-gray-900 text-white font-bold text-xs rounded-xl"
+                  className="w-full py-2.5 bg-primary hover:bg-primary/90 text-white font-bold text-xs rounded-xl"
                 >
                   Đóng
                 </button>
@@ -2409,6 +2688,372 @@ export default function Requests() {
                   </div>
                 </>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: BỔ SUNG DỮ LIỆU CHẤM CÔNG (ATTENDANCE CORRECTION) */}
+      <AnimatePresence>
+        {showAttendanceCorrectionModal && correctionTicket && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4">
+            <motion.div
+              initial={{ opacity: 0, y: 100 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 100 }}
+              className="bg-white w-full max-w-md rounded-t-2xl sm:rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+            >
+              {/* Header */}
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-slate-50">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-base">Bổ sung dữ liệu chấm công</h3>
+                    <p className="text-[11px] text-gray-500">Mã ticket: {correctionTicket.id}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowAttendanceCorrectionModal(false);
+                    setCorrectionTicket(null);
+                  }}
+                  className="p-1.5 rounded-full hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-5 overflow-y-auto space-y-4 text-xs">
+                {/* Related Shift Info Banner */}
+                {(() => {
+                  const shift = correctionTicket.relatedShift || availableShifts.find((s: any) => s.id === correctionTicket.shiftId);
+                  const storeName = shift?.storeName || "HMK Nguyễn Trãi";
+                  const shiftName = shift?.shiftName || "Ca Sáng";
+                  const timeStr = shift?.timeStr || "08:00 - 15:00";
+                  const durationMinutes = shift?.scheduledDurationMinutes || 420;
+
+                  return (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                      <div className="flex justify-between items-center text-slate-800">
+                        <span className="font-bold text-slate-900 text-sm">{formatDateDDMMYYYY(correctionTicket.date)}</span>
+                        <span className="bg-primary/10 text-primary font-bold px-2 py-0.5 rounded text-[11px]">
+                          {shiftName}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-slate-600">
+                        <div>
+                          <span className="text-gray-400 block text-[10px]">Thời gian ca:</span>
+                          <span className="font-semibold">{timeStr} ({durationMinutes / 60}h)</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400 block text-[10px]">Cửa hàng:</span>
+                          <span className="font-semibold">{storeName}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Time Inputs */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-gray-700 mb-1">
+                      Giờ Check-in thực tế <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={correctionInTime}
+                      onChange={(e) => setCorrectionInTime(e.target.value)}
+                      className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl font-bold text-gray-800 focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-gray-700 mb-1">
+                      Giờ Check-out thực tế <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={correctionOutTime}
+                      onChange={(e) => setCorrectionOutTime(e.target.value)}
+                      className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl font-bold text-gray-800 focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Reason */}
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">
+                    Lý do bổ sung công <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={correctionReason}
+                    onChange={(e) => setCorrectionReason(e.target.value)}
+                    placeholder="Nhập lý do quên bấm vân tay / chấm công thực tế..."
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all resize-none"
+                  ></textarea>
+                </div>
+
+                {/* Attachment */}
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">
+                    Minh chứng đính kèm (Hình ảnh, tin nhắn xác nhận)
+                  </label>
+                  <div className="border-2 border-dashed border-gray-200 rounded-xl p-3 text-center bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer">
+                    <p className="text-gray-500 text-xs">📸 Chạm để chọn ảnh / tài liệu minh chứng</p>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-primary/5 border border-primary/20 rounded-xl text-slate-800 text-[11px] leading-relaxed">
+                  ℹ️ Giải trình điểm danh sau khi gửi sẽ chuyển tới Quản lý xét duyệt và không tác động vào quỹ phép năm.
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 border-t border-gray-100 bg-white">
+                <button
+                  disabled={!correctionInTime || !correctionOutTime || !correctionReason.trim()}
+                  onClick={() => {
+                    const res = commitAttendanceCorrection(
+                      correctionTicket.id,
+                      correctionInTime,
+                      correctionOutTime,
+                      correctionReason.trim(),
+                      undefined
+                    );
+                    if (res.success) {
+                      setShowAttendanceCorrectionModal(false);
+                      setCorrectionTicket(null);
+                      setToast({ message: res.message, type: "success" });
+                    } else {
+                      setToast({ message: res.message, type: "error" });
+                    }
+                  }}
+                  className={cn(
+                    "w-full py-3.5 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md text-sm",
+                    !correctionInTime || !correctionOutTime || !correctionReason.trim()
+                      ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                      : "bg-primary hover:bg-primary/90 text-white"
+                  )}
+                >
+                  <Send className="w-4 h-4" /> Gửi bổ sung dữ liệu
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: TẠO NGHỈ PHÉP TỪ MISSING BOTH (BACKDATED LEAVE) */}
+      <AnimatePresence>
+        {showBackdatedLeaveModal && backdatedTicket && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4">
+            <motion.div
+              initial={{ opacity: 0, y: 100 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 100 }}
+              className="bg-white w-full max-w-md rounded-t-2xl sm:rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+            >
+              {/* Header */}
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-primary/10">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+                    <Umbrella className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-base">Tạo yêu cầu nghỉ đột xuất</h3>
+                    <p className="text-[11px] text-gray-500">Từ ticket Missing Both {backdatedTicket.id}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowBackdatedLeaveModal(false);
+                    setBackdatedTicket(null);
+                  }}
+                  className="p-1.5 rounded-full hover:bg-primary/20 text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-5 overflow-y-auto space-y-4 text-xs">
+                {/* Related Shift Info Banner */}
+                {(() => {
+                  const shift = backdatedTicket.relatedShift || availableShifts.find((s: any) => s.id === backdatedTicket.shiftId);
+                  const storeName = shift?.storeName || "HMK Nguyễn Trãi";
+                  const shiftName = shift?.shiftName || "Ca Sáng";
+                  const timeStr = shift?.timeStr || "08:00 - 15:00";
+                  const durationMinutes = shift?.scheduledDurationMinutes || 420;
+                  const ratio = durationMinutes / 480;
+                  const calcDays = ratio >= 0.875 ? 1.0 : Number(ratio.toFixed(2));
+
+                  return (
+                    <div className="bg-primary/5 border border-primary/20 rounded-xl p-3.5 space-y-2.5">
+                      <div className="flex justify-between items-center">
+                        <span className="font-bold text-slate-900 text-sm">{formatDateDDMMYYYY(backdatedTicket.date)}</span>
+                        <span className="bg-primary/10 text-primary font-bold px-2 py-0.5 rounded text-[11px]">
+                          {shiftName}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-slate-700">
+                        <div>
+                          <span className="text-gray-500 block text-[10px]">Thời lượng ca:</span>
+                          <span className="font-bold">{durationMinutes} phút ({timeStr})</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500 block text-[10px]">Cửa hàng:</span>
+                          <span className="font-bold">{storeName}</span>
+                        </div>
+                      </div>
+                      
+                      {backdatedLeaveType === "ANNUAL_LEAVE" ? (
+                        <div className="pt-2 border-t border-primary/20 flex items-center justify-between text-slate-900">
+                          <span>Quy đổi ngày phép tính toán:</span>
+                          <span className="font-bold text-sm text-primary bg-white px-2 py-0.5 rounded-md border border-primary/30">
+                            {calcDays} ngày ({durationMinutes}/480p)
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="pt-2 border-t border-primary/20 text-sky-800 text-[11px] font-medium">
+                          ℹ️ Nghỉ không lương không sử dụng quỹ phép năm.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Leave Type Selection */}
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1.5">
+                    Chọn loại nghỉ phép <span className="text-red-500">*</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      disabled={!user?.annualLeaveEligible}
+                      onClick={() => user?.annualLeaveEligible && setBackdatedLeaveType("ANNUAL_LEAVE")}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between",
+                        backdatedLeaveType === "ANNUAL_LEAVE"
+                          ? "bg-primary/10 border-primary ring-2 ring-primary/40"
+                          : "bg-gray-50 border-gray-200 hover:bg-gray-100",
+                        !user?.annualLeaveEligible && "opacity-60 cursor-not-allowed bg-gray-100"
+                      )}
+                    >
+                      <div>
+                        <div className="font-bold text-gray-900 flex items-center justify-between mb-1">
+                          <span>Phép năm</span>
+                          {backdatedLeaveType === "ANNUAL_LEAVE" && (
+                            <CheckCircle2 className="w-4 h-4 text-primary" />
+                          )}
+                        </div>
+                        {user?.annualLeaveEligible ? (
+                          <p className="text-[10px] text-gray-500">Khả dụng: {leaveBalance.available} ngày</p>
+                        ) : (
+                          <p className="text-[10px] text-red-600 font-medium leading-tight mt-0.5">
+                            Bạn chưa thuộc đối tượng được hưởng phép năm.
+                          </p>
+                        )}
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setBackdatedLeaveType("UNPAID_LEAVE")}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between",
+                        backdatedLeaveType === "UNPAID_LEAVE"
+                          ? "bg-primary/10 border-primary ring-2 ring-primary/40"
+                          : "bg-gray-50 border-gray-200 hover:bg-gray-100"
+                      )}
+                    >
+                      <div>
+                        <div className="font-bold text-gray-900 flex items-center justify-between mb-1">
+                          <span>Nghỉ không lương</span>
+                          {backdatedLeaveType === "UNPAID_LEAVE" && (
+                            <CheckCircle2 className="w-4 h-4 text-primary" />
+                          )}
+                        </div>
+                        <p className="text-[10px] text-gray-500">Không trừ quỹ phép</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Important Non-Reservation Note */}
+                {backdatedLeaveType === "ANNUAL_LEAVE" ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed space-y-1">
+                    <p className="font-bold flex items-center gap-1 text-amber-950">
+                      <span>ℹ️</span> Quy định xử lý nghỉ đột xuất từ Missing Both:
+                    </p>
+                    <p>
+                      Yêu cầu nghỉ đột xuất không tạo giữ chỗ phép. Quỹ phép chỉ được trừ nếu Quản lý duyệt theo hình thức Phép năm.
+                    </p>
+                  </div>
+                ) : backdatedLeaveType === "UNPAID_LEAVE" ? (
+                  <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-sky-900 text-[11px] leading-relaxed space-y-1">
+                    <p className="font-bold flex items-center gap-1 text-sky-950">
+                      <span>ℹ️</span> Quy định xử lý nghỉ đột xuất từ Missing Both:
+                    </p>
+                    <p>
+                      Nghỉ không lương không sử dụng quỹ phép năm. Khi được duyệt, số dư phép năm của bạn không thay đổi.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl text-gray-700 text-[11px] leading-relaxed">
+                    <span>ℹ️ Vui lòng chọn loại nghỉ phép (Phép năm hoặc Nghỉ không lương) để tiếp tục.</span>
+                  </div>
+                )}
+
+                {/* Reason Input */}
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">
+                    Lý do nghỉ phép đột xuất <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={backdatedReason}
+                    onChange={(e) => setBackdatedReason(e.target.value)}
+                    placeholder="Nhập lý do bạn đã vắng mặt trong ca làm việc..."
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all resize-none"
+                  ></textarea>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 border-t border-gray-100 bg-white">
+                <button
+                  disabled={!backdatedReason.trim() || !backdatedLeaveType || (backdatedLeaveType === "ANNUAL_LEAVE" && !user?.annualLeaveEligible)}
+                  onClick={() => {
+                    if (!backdatedLeaveType) return;
+                    const res = createBackdatedLeaveFromMissingBoth(
+                      backdatedTicket.id,
+                      backdatedLeaveType,
+                      backdatedReason.trim(),
+                      undefined
+                    );
+                    if (res.success) {
+                      setShowBackdatedLeaveModal(false);
+                      setBackdatedTicket(null);
+                      setToast({ message: res.message, type: "success" });
+                    } else {
+                      setToast({ message: res.message, type: "error" });
+                    }
+                  }}
+                  className={cn(
+                    "w-full py-3.5 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md text-sm",
+                    !backdatedReason.trim() || !backdatedLeaveType || (backdatedLeaveType === "ANNUAL_LEAVE" && !user?.annualLeaveEligible)
+                      ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                      : "bg-primary hover:bg-primary/90 text-white"
+                  )}
+                >
+                  <Send className="w-4 h-4" /> Gửi yêu cầu nghỉ đột xuất
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
