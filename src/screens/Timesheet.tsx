@@ -20,7 +20,7 @@ import {
 import { vi } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
-import { useApp } from "@/context/AppContext";
+import { useApp, ShiftAttendanceSession } from "@/context/AppContext";
 
 // Type definition for historical attendance records
 export type AttendanceHistoryRecord = {
@@ -37,8 +37,15 @@ export type AttendanceHistoryRecord = {
   isOvernight?: boolean;
 };
 
+// Consistent hour precision formatter (e.g. 0h, 7h, 7.5h, 31.25h)
+export function formatWorkHours(hours: number): string {
+  if (!hours || isNaN(hours) || hours <= 0) return "0h";
+  const rounded = Math.round(hours * 100) / 100;
+  return `${rounded}h`;
+}
+
 // Mock historical dataset calibrated for September 2026 (Công chuẩn: 76.9h, Công thực tế: 75.8h)
-const baseAttendanceHistory: AttendanceHistoryRecord[] = [
+export const baseAttendanceHistory: AttendanceHistoryRecord[] = [
   // 07/09/2026
   {
     id: "rec-0709-1",
@@ -329,6 +336,41 @@ export function calculateElapsedDuration(
   return Number(Math.max(0, durationHours).toFixed(2));
 }
 
+// Function to merge base attendance records with any completed live sessions
+export function getMergedAttendanceRecords(sessions: ShiftAttendanceSession[] = []): AttendanceHistoryRecord[] {
+  const list = [...baseAttendanceHistory];
+
+  // Check attendanceSessions for any completed session in the active context
+  sessions.forEach((sess) => {
+    if (sess.status === "completed" && sess.checkInTime && sess.checkOutTime) {
+      const inStr = format(sess.checkInTime, "HH:mm");
+      const outStr = format(sess.checkOutTime, "HH:mm");
+      const exists = list.some(
+        (r) =>
+          r.date.toDateString() === sess.date.toDateString() &&
+          r.shiftName === sess.shiftName &&
+          r.checkIn === inStr
+      );
+      if (!exists) {
+        list.push({
+          id: `session_${sess.id}`,
+          date: sess.date,
+          shiftName: sess.shiftName,
+          workingBranch: sess.storeName || "HMK Nguyễn Trãi",
+          scheduledStartTime: sess.timeStr?.split("-")[0]?.trim() || inStr,
+          scheduledEndTime: sess.timeStr?.split("-")[1]?.trim() || outStr,
+          checkIn: inStr,
+          checkOut: outStr,
+          standardWorkHours: sess.hours || 0,
+          actualWorkHours: sess.hours || 0,
+        });
+      }
+    }
+  });
+
+  return list;
+}
+
 // Helper to parse check-in time for ASC sorting within a date
 function parseCheckInMinutes(timeStr?: string | null): number {
   if (!timeStr || timeStr === "--") return 9999;
@@ -358,37 +400,7 @@ export default function Timesheet() {
 
   // Merge any completed sessions from AppContext with baseAttendanceHistory
   const allHistoryRecords = useMemo(() => {
-    const list = [...baseAttendanceHistory];
-
-    // Check attendanceSessions for any completed session in the active context
-    attendanceSessions.forEach((sess) => {
-      if (sess.status === "completed" && sess.checkInTime && sess.checkOutTime) {
-        const inStr = format(sess.checkInTime, "HH:mm");
-        const outStr = format(sess.checkOutTime, "HH:mm");
-        const exists = list.some(
-          (r) =>
-            r.date.toDateString() === sess.date.toDateString() &&
-            r.shiftName === sess.shiftName &&
-            r.checkIn === inStr
-        );
-        if (!exists) {
-          list.push({
-            id: `session_${sess.id}`,
-            date: sess.date,
-            shiftName: sess.shiftName,
-            workingBranch: sess.storeName || "HMK Nguyễn Trãi",
-            scheduledStartTime: sess.timeStr?.split("-")[0]?.trim() || inStr,
-            scheduledEndTime: sess.timeStr?.split("-")[1]?.trim() || outStr,
-            checkIn: inStr,
-            checkOut: outStr,
-            standardWorkHours: sess.hours || 0,
-            actualWorkHours: sess.hours || 0,
-          });
-        }
-      }
-    });
-
-    return list;
+    return getMergedAttendanceRecords(attendanceSessions);
   }, [attendanceSessions]);
 
   // Current month's records before filter

@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import ScreenHeader from "@/components/ScreenHeader";
 import Header from "@/components/Header";
-import { format } from "date-fns";
+import { format, startOfWeek, endOfWeek } from "date-fns";
 import { vi } from "date-fns/locale";
 import {
   ChevronRight,
@@ -12,19 +12,19 @@ import { useApp } from "@/context/AppContext";
 import { Link, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
+import { getMergedAttendanceRecords, formatWorkHours } from "@/screens/Timesheet";
 
 export default function Dashboard() {
   const {
     hasCheckedIn,
     availableShifts,
     briefings,
+    attendanceSessions,
     markBriefingAsRead,
     acknowledgeBriefing,
     hasAcknowledgedBriefing,
     setHasAcknowledgedBriefing,
     acknowledgeDispatch,
-    registeredHours,
-    maxHoursPerWeek,
   } = useApp();
   const navigate = useNavigate();
   const [time, setTime] = useState(new Date());
@@ -33,6 +33,40 @@ export default function Dashboard() {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Same week boundary convention (Monday -> Sunday) for both KPIs
+  const startOfCurWeek = useMemo(() => startOfWeek(time, { weekStartsOn: 1 }), [time]);
+  const endOfCurWeek = useMemo(() => endOfWeek(time, { weekStartsOn: 1 }), [time]);
+
+  // KPI #1: GIỜ CA ĐÃ XẾP
+  // Total scheduled duration of the employee's effective work assignments for the current week
+  // Only includes effective assignments: approved/published normal shifts, manager-assigned shifts, valid dispatch/support
+  // Pending registration requests are NOT counted. Cancelled/removed are NOT counted.
+  const scheduledWorkHours = useMemo(() => {
+    return availableShifts
+      .filter((s) => {
+        const sDate = s.date instanceof Date ? s.date : new Date(s.date);
+        const isEffectiveSchedule = s.status === "approved" || s.status === "assigned";
+        return isEffectiveSchedule && sDate >= startOfCurWeek && sDate <= endOfCurWeek;
+      })
+      .reduce((sum, s) => sum + (s.hours || 0), 0);
+  }, [availableShifts, startOfCurWeek, endOfCurWeek]);
+
+  // KPI #2: GIỜ CÔNG THỰC TẾ
+  // Total current official/effective work hours recorded for the employee during the current week
+  // Derived from existing attendance calculation records (actualWorkHours) in the same week
+  const allAttendanceRecords = useMemo(() => {
+    return getMergedAttendanceRecords(attendanceSessions);
+  }, [attendanceSessions]);
+
+  const actualWorkHours = useMemo(() => {
+    return allAttendanceRecords
+      .filter((r) => {
+        const rDate = r.date instanceof Date ? r.date : new Date(r.date);
+        return rDate >= startOfCurWeek && rDate <= endOfCurWeek;
+      })
+      .reduce((sum, r) => sum + (r.actualWorkHours || 0), 0);
+  }, [allAttendanceRecords, startOfCurWeek, endOfCurWeek]);
 
   const registeredShifts = availableShifts
     .filter((t) => t.status === "approved" || t.status === "pending")
@@ -151,77 +185,46 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* Timesheet Tracker / Weekly Analysis Card */}
-        <section>
-          <div className="flex justify-between items-center mb-4 mt-6">
+        {/* Weekly Work Analysis Card */}
+        <section id="weekly-work-analysis-section">
+          <div className="flex justify-between items-center mb-3 mt-6">
             <h2 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-[0.15em]">
               Phân tích công / Tuần
             </h2>
             <Link
+              id="weekly-analysis-detail-link"
               to="/timesheet"
               className="text-[10px] font-bold text-[#558BAD] bg-[#F0F6FA] border border-[#558BAD]/20 px-2.5 py-1 rounded-lg hover:bg-[#E2EDF4] flex items-center uppercase tracking-wide transition-colors"
             >
               Chi tiết <ChevronRight className="w-3 h-3 ml-0.5" />
             </Link>
           </div>
-          <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-card flex flex-col gap-6">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-wide">
-                  Thời lượng đăng ký
+
+          <div
+            id="weekly-work-analysis-card"
+            className="bg-white border border-slate-100 rounded-2xl p-5 shadow-card"
+          >
+            <div className="grid grid-cols-2 divide-x divide-slate-100">
+              {/* KPI #1: GIỜ CA ĐÃ XẾP */}
+              <div id="kpi-scheduled-hours" className="pr-3 sm:pr-4 flex flex-col justify-between">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-tight">
+                  Giờ ca đã xếp
                 </p>
-                <div className="flex items-baseline gap-1.5 min-h-[32px]">
-                  <span className="text-3xl font-bold font-display text-slate-900 tracking-tight">
-                    {registeredHours}
-                  </span>
-                  <span className="text-xs font-bold text-slate-400 uppercase">
-                    / {maxHoursPerWeek}h
+                <div className="flex items-baseline">
+                  <span className="text-2xl sm:text-3xl font-extrabold font-display text-[#558BAD] tracking-tight">
+                    {formatWorkHours(scheduledWorkHours)}
                   </span>
                 </div>
               </div>
 
-              <div className="border-l border-slate-100 pl-6">
-                <p className="text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-wide">
-                  Chỉ số vi phạm
+              {/* KPI #2: GIỜ CÔNG THỰC TẾ */}
+              <div id="kpi-actual-hours" className="pl-3 sm:pl-4 flex flex-col justify-between">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-tight">
+                  Giờ công thực tế
                 </p>
-                <div className="flex items-baseline gap-1.5 min-h-[32px]">
-                  <span className="text-3xl font-bold font-display text-slate-900 tracking-tight">
-                    45
-                  </span>
-                  <span className="text-[10px] font-extrabold text-slate-400 uppercase">
-                    Phút
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-2.5">
-              <div className="flex justify-between text-[10px] font-extrabold uppercase tracking-[0.1em]">
-                <span className="text-slate-500">Mức độ cam kết</span>
-                <span className="text-[#558BAD]">
-                  {Math.round((registeredHours / maxHoursPerWeek) * 100)}%
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden flex border border-slate-200/50">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ 
-                    width: `${Math.min(100, (registeredHours / maxHoursPerWeek) * 100)}%` 
-                  }}
-                  className="h-full rounded-full transition-all duration-1000 bg-[#558BAD]"
-                ></motion.div>
-              </div>
-            </div>
-
-            <div className="flex justify-between items-center text-[10px] pt-1">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 font-bold uppercase tracking-wide text-slate-400">
-                  <span className="w-2 h-2 rounded-full bg-[#558BAD]"></span>
-                  <span>
-                    Hiện hữu:{" "}
-                    <span className="text-slate-900 font-display text-sm ml-1 lowercase">
-                      {registeredHours}h
-                    </span>
+                <div className="flex items-baseline">
+                  <span className="text-2xl sm:text-3xl font-extrabold font-display text-[#558BAD] tracking-tight">
+                    {formatWorkHours(actualWorkHours)}
                   </span>
                 </div>
               </div>
