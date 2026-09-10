@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import ScreenHeader from "@/components/ScreenHeader";
 import { useApp, LeaveRequestType, AttendanceTicket } from "@/context/AppContext";
 import { format } from "date-fns";
 import { vi } from "date-fns/locale";
@@ -11,6 +12,8 @@ import {
   Clock,
   FileText,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   RefreshCw,
   Send,
   Inbox,
@@ -171,6 +174,11 @@ export default function Requests() {
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
   const [receivedRevs, setReceivedRevs] = useState(mockReceivedRequests);
   const [sentRevs, setSentRevs] = useState(mockSentRequests);
+  const [isLeaveBalanceCollapsed, setIsLeaveBalanceCollapsed] = useState(false);
+
+  const usedLeaveDays = leaveRequests
+    .filter(l => (l.type === "ANNUAL_LEAVE" || (l.type as string) === "Phép năm") && (l.status === "APPROVED" || (l.status as string) === "Đã duyệt"))
+    .reduce((sum, l) => sum + (l.officialDebitedDays || l.requestedLeaveDays || 0), 0) || 2.0;
 
   // Leave Form State
   const [leaveType, setLeaveType] = useState<LeaveRequestType>("ANNUAL_LEAVE");
@@ -817,159 +825,193 @@ export default function Requests() {
           />
         )}
       </AnimatePresence>
-      <div className="bg-white px-4 py-3 sticky top-0 z-30 flex flex-col gap-3 pb-3 border-b border-gray-100">
-        <div className="flex justify-between items-center pt-2">
-          <h1 className="text-2xl font-bold text-gray-900">
-            Yêu cầu
-          </h1>
-        </div>
+      <div className="bg-white sticky top-0 z-30 flex flex-col border-b border-gray-100 shadow-soft">
+        <ScreenHeader
+          title="Requests"
+          description="Manage attendance, leave, and shift requests"
+        />
 
-        <div className="flex gap-2">
-          <button
-            onClick={() => {
-              setActiveTab("received");
-              setFilterType("all");
-            }}
-            className={cn(
-              "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
-              activeTab === "received"
-                ? "bg-primary/10 text-primary border-primary"
-                : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
-            )}
-          >
-            <Inbox
+        <div className="px-4 pb-3 flex flex-col gap-3">
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setActiveTab("received");
+                setFilterType("all");
+              }}
               className={cn(
-                "w-4 h-4",
-                activeTab === "received" ? "text-primary" : "text-gray-400",
+                "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
+                activeTab === "received"
+                  ? "bg-[#558BAD]/10 text-[#558BAD] border-[#558BAD]"
+                  : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
               )}
-            />{" "}
-            Xử lý
-            {receivedRevs.some((r) => r.isActionable) && (
-              <span className="w-2 h-2 rounded-full bg-red-500"></span>
-            )}
-          </button>
-          <button
-            onClick={() => {
-              setActiveTab("sent");
-              setFilterType("all");
-            }}
-            className={cn(
-              "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
-              activeTab === "sent"
-                ? "bg-primary/10 text-primary border-primary"
-                : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
-            )}
-          >
-            <Send
+            >
+              <Inbox
+                className={cn(
+                  "w-4 h-4",
+                  activeTab === "received" ? "text-[#558BAD]" : "text-gray-400",
+                )}
+              />{" "}
+              Xử lý
+              {receivedRevs.some((r) => r.isActionable) && (
+                <span className="w-2 h-2 rounded-full bg-red-500"></span>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab("sent");
+                setFilterType("all");
+              }}
               className={cn(
-                "w-4 h-4",
-                activeTab === "sent" ? "text-primary" : "text-gray-400",
+                "flex-1 py-2 text-xs font-bold rounded-full transition-all flex items-center justify-center gap-2 border",
+                activeTab === "sent"
+                  ? "bg-[#558BAD]/10 text-[#558BAD] border-[#558BAD]"
+                  : "bg-transparent text-gray-500 border-gray-200 hover:text-gray-700 hover:border-gray-400",
               )}
-            />{" "}
-            Đã gửi
-          </button>
-        </div>
+            >
+              <Send
+                className={cn(
+                  "w-4 h-4",
+                  activeTab === "sent" ? "text-[#558BAD]" : "text-gray-400",
+                )}
+              />{" "}
+              Đã gửi
+            </button>
+          </div>
 
-        {/* Filter Bar */}
-        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-          <button
-            onClick={() => setFilterType("all")}
-            className={cn(
-              "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
-              filterType === "all"
-                ? "bg-primary text-white border-primary shadow-sm"
-                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+          {/* Filter Bar */}
+          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+            <button
+              onClick={() => setFilterType("all")}
+              className={cn(
+                "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                filterType === "all"
+                  ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+              )}
+            >
+              Tất cả
+            </button>
+            {activeTab === "received" && (
+              <>
+                <button
+                  onClick={() => setFilterType("forgot_in")}
+                  className={cn(
+                    "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                    filterType === "forgot_in"
+                      ? "bg-red-50 text-red-600 border-red-200 font-bold"
+                      : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+                  )}
+                >
+                  Thiếu Check-in
+                </button>
+                <button
+                  onClick={() => setFilterType("forgot_out")}
+                  className={cn(
+                    "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                    filterType === "forgot_out"
+                      ? "bg-red-50 text-red-600 border-red-200 font-bold"
+                      : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+                  )}
+                >
+                  Thiếu Check-out
+                </button>
+              </>
             )}
-          >
-            Tất cả
-          </button>
-          {activeTab === "received" && (
-            <>
-              <button
-                onClick={() => setFilterType("forgot_in")}
-                className={cn(
-                  "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
-                  filterType === "forgot_in"
-                    ? "bg-red-50 text-red-600 border-red-200"
-                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
-                )}
-              >
-                Thiếu Check-in
-              </button>
-              <button
-                onClick={() => setFilterType("forgot_out")}
-                className={cn(
-                  "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
-                  filterType === "forgot_out"
-                    ? "bg-red-50 text-red-600 border-red-200"
-                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
-                )}
-              >
-                Thiếu Check-out
-              </button>
-            </>
-          )}
-          <button
-            onClick={() => setFilterType("swap")}
-            className={cn(
-              "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
-              filterType === "swap"
-                ? "bg-primary text-white border-primary shadow-sm"
-                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
-            )}
-          >
-            Đổi ca
-          </button>
-          <button
-            onClick={() => setFilterType("leave")}
-            className={cn(
-              "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
-              filterType === "leave"
-                ? "bg-primary text-white border-primary shadow-sm"
-                : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
-            )}
-          >
-            Nghỉ phép
-          </button>
+            <button
+              onClick={() => setFilterType("swap")}
+              className={cn(
+                "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                filterType === "swap"
+                  ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+              )}
+            >
+              Đổi ca
+            </button>
+            <button
+              onClick={() => setFilterType("leave")}
+              className={cn(
+                "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                filterType === "leave"
+                  ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+              )}
+            >
+              Nghỉ phép
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="flex-1 p-4 overflow-y-auto">
-        {/* MOB-01: Thẻ Số dư phép năm (Leave Balance Card) */}
-        <div className="bg-gradient-to-br from-[#416C87] to-[#558BAD] text-white rounded-2xl p-4 shadow-sm relative overflow-hidden border border-[#558BAD]/30 mb-4">
-          <div className="flex justify-between items-start mb-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-white/80 text-xs font-semibold uppercase tracking-wider">
-                <Umbrella className="w-4 h-4 text-white" />
-                <span>Số dư phép năm</span>
-              </div>
-              <div className="mt-1 flex items-baseline gap-2">
-                <span className="text-3xl font-extrabold tracking-tight text-white">
-                  {leaveBalance.available}
-                </span>
-                <span className="text-xs font-medium text-white/80">ngày khả dụng</span>
+        {/* MOB-01: Thẻ Số dư phép năm (Collapsible Leave Balance Card) */}
+        {isLeaveBalanceCollapsed ? (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={() => setIsLeaveBalanceCollapsed(false)}
+            className="bg-gradient-to-br from-[#416C87] to-[#558BAD] text-white rounded-2xl px-4 py-3 shadow-sm border border-[#558BAD]/30 mb-4 flex items-center justify-between cursor-pointer hover:opacity-95 transition-all"
+          >
+            <div className="flex items-center gap-2">
+              <Umbrella className="w-4 h-4 text-white" />
+              <span className="text-xs font-bold uppercase tracking-wider text-white/90">Số dư phép năm</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="text-sm font-extrabold text-white">{leaveBalance.available} ngày khả dụng</span>
+              <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center text-white">
+                <ChevronDown className="w-3.5 h-3.5" />
               </div>
             </div>
-            <button
-              onClick={() => setShowLedgerModal(true)}
-              className="px-3 py-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 text-white text-xs font-bold rounded-lg border border-white/30 transition-all flex items-center gap-1.5 backdrop-blur-sm cursor-pointer"
-            >
-              <FileText className="w-3.5 h-3.5 text-white" />
-              <span>Lịch sử phép</span>
-            </button>
-          </div>
+          </motion.div>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-gradient-to-br from-[#416C87] to-[#558BAD] text-white rounded-2xl p-4 shadow-sm relative overflow-hidden border border-[#558BAD]/30 mb-4"
+          >
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="flex items-center gap-1.5 text-white/80 text-xs font-semibold uppercase tracking-wider">
+                  <Umbrella className="w-4 h-4 text-white" />
+                  <span>Số dư phép năm</span>
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="text-3xl font-extrabold tracking-tight text-white">
+                    {leaveBalance.available}
+                  </span>
+                  <span className="text-xs font-medium text-white/80">ngày khả dụng</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowLedgerModal(true)}
+                  className="px-3 py-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 text-white text-xs font-bold rounded-lg border border-white/30 transition-all flex items-center gap-1.5 backdrop-blur-sm cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-white" />
+                  <span>Lịch sử phép</span>
+                </button>
+                <button
+                  onClick={() => setIsLeaveBalanceCollapsed(true)}
+                  title="Thu gọn thẻ"
+                  className="p-1.5 bg-white/20 hover:bg-white/30 active:bg-white/40 text-white rounded-lg border border-white/30 transition-all backdrop-blur-sm cursor-pointer"
+                >
+                  <ChevronUp className="w-4 h-4 text-white" />
+                </button>
+              </div>
+            </div>
 
-          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/20 text-xs">
-            <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
-              <span className="text-white/70 block text-[10px] font-medium uppercase tracking-wider">Số dư quỹ phép</span>
-              <span className="text-sm font-bold text-white">{leaveBalance.currentBalance} ngày</span>
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/20 text-xs">
+              <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
+                <span className="text-white/70 block text-[10px] font-medium uppercase tracking-wider">Đã sử dụng</span>
+                <span className="text-sm font-bold text-white">{usedLeaveDays} ngày</span>
+              </div>
+              <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
+                <span className="text-amber-200 block text-[10px] font-medium uppercase tracking-wider">Đang giữ chỗ</span>
+                <span className="text-sm font-bold text-amber-300">{leaveBalance.reserved} ngày</span>
+              </div>
             </div>
-            <div className="bg-black/15 rounded-xl p-2.5 backdrop-blur-xs">
-              <span className="text-amber-200 block text-[10px] font-medium uppercase tracking-wider">Đang giữ chỗ</span>
-              <span className="text-sm font-bold text-amber-300">{leaveBalance.reserved} ngày</span>
-            </div>
-          </div>
-        </div>
+          </motion.div>
+        )}
 
         <AnimatePresence mode="wait">
           <motion.div

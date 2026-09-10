@@ -1,26 +1,31 @@
-import React, { useState } from "react";
+import React from "react";
+import ScreenHeader from "@/components/ScreenHeader";
 import { useApp } from "@/context/AppContext";
 import {
   Mail,
   Phone,
   Calendar,
-  Wallet,
   Bell,
   Moon,
   Languages,
   Shield,
   LogOut,
   ChevronRight,
-  Lock,
-  AlertTriangle,
+  Store,
+  PhoneCall,
+  ShieldCheck,
 } from "lucide-react";
 
 export default function Profile() {
   const { user, logout } = useApp();
-  const [showPayroll, setShowPayroll] = useState(false);
 
   return (
     <div className="flex flex-col h-full bg-background overflow-y-auto">
+      <ScreenHeader
+        title="Profile"
+        description="Manage your personal information and preferences"
+      />
+
       {/* Header Profile */}
       <div className="bg-white relative pb-8 border-b-2 border-gray-100">
         <div className="h-32 bg-gradient-to-r from-[#416C87] to-[#558BAD]"></div>
@@ -64,116 +69,109 @@ export default function Profile() {
           </div>
         </section>
 
-        {/* Tracking Đào tạo */}
+        {/* Thông tin liên hệ & Đơn vị (2 columns) */}
         <section className="bg-white rounded-xl p-5 shadow-sm border-2 border-gray-100">
-          <h2 className="text-xs font-bold text-gray-900 mb-4 uppercase tracking-wide flex items-center justify-between">
-            <span>Tiến độ Đào tạo</span>
+          <h2 className="text-xs font-bold text-gray-900 mb-4 uppercase tracking-wide">
+            Thông tin liên hệ & Chi nhánh
           </h2>
-          <div className="space-y-4">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-green-50 border border-green-100 flex items-center justify-center shrink-0">
-                <Shield className="w-6 h-6 text-green-600" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {/* Số điện thoại */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <Phone className="w-4 h-4" />
               </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-bold text-gray-900 mb-0.5">
-                  An toàn Vệ sinh thực phẩm
-                </h3>
-                <div className="flex justify-between items-center mt-1.5">
-                  <p className="text-xs font-medium text-gray-500">
-                    Hoàn thành: 100%
-                  </p>
-                  <p className="text-[10px] font-bold text-green-700 border border-green-200 bg-green-50 px-2 py-0.5 rounded-full uppercase tracking-wide">
-                    Đạt
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4 bg-red-50/50 p-3 -mx-3 rounded-xl border border-red-100 relative overflow-hidden">
-              <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500"></div>
-              <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center shrink-0 border border-red-200 shadow-sm">
-                <AlertTriangle className="w-5 h-5 text-red-600" />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-bold text-red-600 mb-0.5">
-                  Nghiệp vụ Pha chế Nâng cao
-                </h3>
-                <div className="flex justify-between items-center mt-1.5">
-                  <p className="text-[11px] text-red-500 font-medium">
-                    Chứng chỉ sắp hết hạn!
-                  </p>
-                  <p className="text-[10px] font-bold text-white bg-red-500 px-2 py-1 rounded border border-red-600 uppercase tracking-wide shadow-sm shadow-red-500/20">
-                    Còn 12 ngày
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Personal Info */}
-        <section className="bg-white rounded-xl p-5 shadow-sm border-2 border-gray-100">
-          <h2 className="text-xs font-bold text-gray-900 mb-5 uppercase tracking-wide">
-            Thông tin liên hệ
-          </h2>
-          <div className="space-y-5">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                <Phone className="w-5 h-5 text-gray-400" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-gray-400 tracking-wide uppercase mb-0.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
                   Số điện thoại
                 </p>
-                <p className="text-sm font-bold text-gray-900">0987 654 321</p>
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {user?.phone || "0987 654 321"}
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                <Mail className="w-5 h-5 text-gray-400" />
+
+            {/* Email công ty */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <Mail className="w-4 h-4" />
               </div>
-              <div>
-                <p className="text-xs font-bold text-gray-400 tracking-wide uppercase mb-0.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
                   Email công ty
                 </p>
-                <p className="text-sm font-bold text-gray-900">
-                  nguyen.vana@company.com
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {user?.email || "my.duong@hmkoptics.com"}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                <Calendar className="w-5 h-5 text-gray-400" />
+
+            {/* Chi nhánh làm việc chính */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <Store className="w-4 h-4" />
               </div>
-              <div>
-                <p className="text-xs font-bold text-gray-400 tracking-wide uppercase mb-0.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
+                  Chi nhánh làm việc chính
+                </p>
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {user?.mainBranch || user?.department || "HMK Nguyễn Trãi"}
+                </p>
+              </div>
+            </div>
+
+            {/* Số điện thoại chi nhánh */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <PhoneCall className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
+                  Số điện thoại chi nhánh
+                </p>
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {user?.branchPhone || "028 7300 6886"}
+                </p>
+              </div>
+            </div>
+
+            {/* Ngày vào làm */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
                   Ngày vào làm
                 </p>
-                <p className="text-sm font-bold text-gray-900">15/04/2023</p>
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {user?.joinDate || "15/04/2023"}
+                </p>
+              </div>
+            </div>
+
+            {/* Chi nhánh được phân quyền */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                  Chi nhánh được phân quyền
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(user?.authorizedBranches || ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Thủ Đức"]).map((branch, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2 py-0.5 bg-white border border-[#558BAD]/30 text-[#558BAD] text-xs font-bold rounded-md shadow-2xs"
+                    >
+                      {branch}
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
-        </section>
-
-        {/* Secure Wallet */}
-        <section>
-          <button
-            onClick={() => setShowPayroll(!showPayroll)}
-            className="w-full bg-white border-2 border-gray-100 rounded-xl p-5 flex items-center shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-all group"
-          >
-            <div className="w-12 h-12 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center mr-4 group-hover:bg-white transition-colors">
-              <Wallet className="w-6 h-6 text-gray-900" />
-            </div>
-            <div className="flex-1 text-left">
-              <h3 className="font-bold text-gray-900 text-sm">
-                Ví lương (Payroll)
-              </h3>
-              <p className="text-xs font-medium text-gray-500 mt-0.5">
-                Yêu cầu xác thực bảo mật
-              </p>
-            </div>
-            <Lock className="w-5 h-5 text-gray-400" />
-          </button>
         </section>
 
         {/* Settings */}

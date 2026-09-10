@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import ScreenHeader from "@/components/ScreenHeader";
 import {
   MapPin,
   Wifi,
@@ -836,26 +837,23 @@ export default function Attendance() {
         </div>
       </div>
 
-      <div className="px-4 py-2" id="attendance-workspace">
-        {/* Header */}
-        <div className="flex justify-between items-end mb-4 mt-2">
-          <div>
-            <h1 className="text-2xl font-bold font-display text-slate-900 tracking-tight">
-              Chấm công
-            </h1>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Ghi nhận ca làm việc & điều kiện bảo mật
-            </p>
-          </div>
+      {/* Header */}
+      <ScreenHeader
+        title="Attendance"
+        description="Check in, check out, and review attendance conditions"
+        rightAction={
           <div className="text-right">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
               Hôm nay
             </span>
-            <span className="text-sm font-black text-slate-800">
+            <span className="text-xs font-black text-slate-800">
               {format(new Date(), "dd/MM/yyyy")}
             </span>
           </div>
-        </div>
+        }
+      />
+
+      <div className="px-4 py-2" id="attendance-workspace">
 
         {/* ==================================================== */}
         {/* SECTION A & BANNERS: ONLY ON MAIN SCREEN */}
@@ -1855,13 +1853,8 @@ export default function Attendance() {
                   <Clock className="w-3.5 h-3.5 text-[#558BAD]" /> LỊCH SỬ HÔM NAY
                 </h3>
                 <button
-                  onClick={() => {
-                    setToast({
-                      message: "Đang mở bảng công chi tiết",
-                      type: "info",
-                    });
-                  }}
-                  className="text-xs font-bold text-slate-500 hover:text-slate-900 flex items-center gap-1 transition-colors"
+                  onClick={() => navigate("/timesheet")}
+                  className="text-xs font-bold text-slate-500 hover:text-[#558BAD] flex items-center gap-1 transition-colors cursor-pointer"
                 >
                   <span>BẢNG CÔNG</span>
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -2011,9 +2004,17 @@ export default function Attendance() {
                 <h2 className="text-[11px] font-extrabold text-slate-500 uppercase tracking-[0.15em] flex items-center gap-2">
                   <Clock className="w-4 h-4 text-[#558BAD]" /> Lịch sử chấm công
                 </h2>
-                <span className="text-[10px] font-bold text-slate-400">
-                  Hôm nay ({attendanceSessions.length})
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-slate-400">
+                    Hôm nay ({attendanceSessions.length})
+                  </span>
+                  <button
+                    onClick={() => navigate("/timesheet")}
+                    className="text-[10px] font-bold text-[#558BAD] hover:underline flex items-center gap-0.5 cursor-pointer ml-1"
+                  >
+                    Xem tất cả <ChevronRight className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-3">

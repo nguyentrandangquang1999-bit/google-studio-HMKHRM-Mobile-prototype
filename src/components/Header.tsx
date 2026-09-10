@@ -1,6 +1,6 @@
 import React from 'react';
 import { useApp } from '@/context/AppContext';
-import { Bell, Search } from 'lucide-react';
+import { Bell } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function Header() {
@@ -26,14 +26,11 @@ export default function Header() {
       </div>
       
       <div className="flex items-center gap-1.5">
-        <button className="w-9 h-9 rounded-xl bg-white border border-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-all active:scale-95 shadow-soft">
-          <Search className="w-4 h-4" />
-        </button>
         <button 
           onClick={() => navigate('/notifications')}
           className="w-9 h-9 rounded-xl bg-white border border-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-all active:scale-95 relative shadow-soft"
         >
-          <Bell className="w-4 h-4" />
+          <Bell className="w-4 h-4 text-[#558BAD]" />
           <span className="absolute top-2 right-2 w-2 h-2 bg-error border-2 border-white rounded-full"></span>
         </button>
       </div>

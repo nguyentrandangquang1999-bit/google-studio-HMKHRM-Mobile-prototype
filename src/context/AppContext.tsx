@@ -9,6 +9,12 @@ export type User = {
   avatar: string;
   skills: string[]; // Thêm Skill Tag
   annualLeaveEligible: boolean; // Thêm cho Leave Foundation MOB-01
+  phone?: string;
+  email?: string;
+  joinDate?: string;
+  mainBranch?: string;
+  branchPhone?: string;
+  authorizedBranches?: string[];
 };
 
 export type ShiftSlot = {
@@ -349,6 +355,12 @@ const mockUser: User = {
   avatar: "https://i.pravatar.cc/150?u=a042581f4e29026024d",
   skills: ["Tư vấn", "Thu ngân"], // User này không có kỹ năng 'Kho'
   annualLeaveEligible: true, // Default: eligible for Annual Leave
+  phone: "0987 654 321",
+  email: "my.duong@hmkoptics.com",
+  joinDate: "15/04/2023",
+  mainBranch: "HMK Nguyễn Trãi",
+  branchPhone: "028 7300 6886",
+  authorizedBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Thủ Đức"],
 };
 
 const defaultLeavePolicy: LeavePolicy = {

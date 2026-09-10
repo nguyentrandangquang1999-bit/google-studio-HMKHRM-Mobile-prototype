@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import ScreenHeader from "@/components/ScreenHeader";
 import { useApp, Shift } from "@/context/AppContext";
 import {
   ChevronLeft,
@@ -313,32 +314,37 @@ export default function Schedule() {
   return (
     <div className="flex flex-col h-full bg-background pb-10">
       {/* Header & Tabs */}
-      <div className="bg-surface px-4 py-4 sticky top-0 z-30 shadow-soft border-b border-slate-100 flex flex-col gap-4">
-        <h1 className="text-xl font-bold font-display text-slate-900 tracking-tight">Lịch trình làm việc</h1>
+      <div className="bg-surface sticky top-0 z-30 shadow-soft border-b border-slate-100 flex flex-col">
+        <ScreenHeader
+          title="Work Schedule"
+          description="View and manage your assigned work shifts"
+        />
 
-        <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-100">
-          <button
-            onClick={() => setActiveTab("my-schedule")}
-            className={cn(
-              "flex-1 py-2 text-[13px] transition-all rounded-lg font-bold tracking-tight",
-              activeTab === "my-schedule"
-                ? "bg-white text-slate-900 shadow-soft"
-                : "text-slate-400 hover:text-slate-600",
-            )}
-          >
-            Lịch cá nhân
-          </button>
-          <button
-            onClick={() => setActiveTab("register")}
-            className={cn(
-              "flex-1 py-2 text-[13px] transition-all rounded-lg font-bold tracking-tight",
-              activeTab === "register"
-                ? "bg-white text-slate-900 shadow-soft"
-                : "text-slate-400 hover:text-slate-600",
-            )}
-          >
-            Đăng ký ca
-          </button>
+        <div className="px-4 pb-3">
+          <div className="flex bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
+            <button
+              onClick={() => setActiveTab("my-schedule")}
+              className={cn(
+                "flex-1 py-2 text-[13px] transition-all rounded-lg font-bold tracking-tight",
+                activeTab === "my-schedule"
+                  ? "bg-white text-[#558BAD] shadow-sm border border-[#558BAD]/20"
+                  : "text-slate-500 hover:text-slate-700",
+              )}
+            >
+              Lịch cá nhân
+            </button>
+            <button
+              onClick={() => setActiveTab("register")}
+              className={cn(
+                "flex-1 py-2 text-[13px] transition-all rounded-lg font-bold tracking-tight",
+                activeTab === "register"
+                  ? "bg-white text-[#558BAD] shadow-sm border border-[#558BAD]/20"
+                  : "text-slate-500 hover:text-slate-700",
+              )}
+            >
+              Đăng ký ca
+            </button>
+          </div>
         </div>
       </div>
 
@@ -363,18 +369,6 @@ export default function Schedule() {
               exit={{ opacity: 0 }}
               className="p-4 space-y-4"
             >
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <h2 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-[0.15em]">
-                    Tính điểm tuần
-                  </h2>
-                </div>
-                <div className="px-3 py-1 bg-slate-900 text-white rounded-lg font-bold text-[10px] tracking-widest uppercase flex items-center gap-1.5">
-                  <div className="w-1 h-1 bg-emerald-400 rounded-full"></div>
-                  {Math.round((registeredHours / maxHoursPerWeek) * 100)}% HOÀN THÀNH
-                </div>
-              </div>
-
               {/* Horizontal Calendar */}
               <div className="bg-white rounded-2xl p-5 shadow-card border border-slate-100">
                 <div className="flex justify-between items-center mb-5">
@@ -525,7 +519,7 @@ export default function Schedule() {
                   className={cn(
                     "flex-1 py-1.5 text-xs font-bold rounded-lg transition-all",
                     myScheduleSubTab === "active"
-                      ? "bg-white text-slate-900 shadow-sm"
+                      ? "bg-white text-[#558BAD] shadow-sm border border-[#558BAD]/20"
                       : "text-slate-500 hover:text-slate-700"
                   )}
                 >
@@ -536,7 +530,7 @@ export default function Schedule() {
                   className={cn(
                     "flex-1 py-1.5 text-xs font-bold rounded-lg transition-all",
                     myScheduleSubTab === "history"
-                      ? "bg-white text-slate-900 shadow-sm"
+                      ? "bg-white text-[#558BAD] shadow-sm border border-[#558BAD]/20"
                       : "text-slate-500 hover:text-slate-700"
                   )}
                 >
