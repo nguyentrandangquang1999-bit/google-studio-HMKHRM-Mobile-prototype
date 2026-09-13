@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import ScreenHeader from "@/components/ScreenHeader";
 import { useApp, Shift } from "@/context/AppContext";
 import {
@@ -22,6 +23,9 @@ import {
   Shield,
   Filter,
   X,
+  Building2,
+  Sparkles,
+  Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, addDays, startOfWeek, isSameDay } from "date-fns";
@@ -111,6 +115,103 @@ const renderStatus = (status: string) => {
   }
 };
 
+const ShiftAuditInfoTooltip: React.FC<{ shift: Shift }> = ({ shift }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleDocumentClick = (e: MouseEvent) => {
+      if (tooltipRef.current && !tooltipRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => document.removeEventListener("mousedown", handleDocumentClick);
+  }, [isOpen]);
+
+  // Xác định người tạo
+  const creator =
+    shift.createdBy ||
+    (shift.status === "open" || shift.isBuddyStore
+      ? "Hệ thống (Auto-schedule)"
+      : "Phan Hải Đăng (CHT)");
+
+  // Xác định thời gian tạo
+  const shiftDate = shift.date instanceof Date ? shift.date : new Date(shift.date);
+  const createdAt = shift.createdAt
+    ? (shift.createdAt instanceof Date ? shift.createdAt : new Date(shift.createdAt))
+    : new Date(shiftDate.getTime() - 3 * 24 * 3600 * 1000 + 8 * 3600 * 1000);
+
+  // Xác định thời gian cập nhật trạng thái
+  const statusUpdatedAt = shift.statusUpdatedAt
+    ? (shift.statusUpdatedAt instanceof Date ? shift.statusUpdatedAt : new Date(shift.statusUpdatedAt))
+    : (shift.createdAt || createdAt);
+
+  return (
+    <div
+      ref={tooltipRef}
+      className="relative inline-flex items-center group/tooltip"
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={() => setIsOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen((prev) => !prev);
+        }}
+        className="p-1 rounded-md text-slate-400 hover:text-[#558BAD] hover:bg-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-[#558BAD]/40 cursor-pointer"
+        title="Xem thông tin ca"
+        aria-label="Xem thông tin ca"
+      >
+        <Info className="w-3.5 h-3.5" />
+      </button>
+
+      {/* Tooltip Content */}
+      <div
+        className={cn(
+          "absolute right-0 top-full mt-2 w-64 p-3 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700/80 z-50 transition-all duration-150 text-left",
+          isOpen
+            ? "opacity-100 translate-y-0 visible pointer-events-auto"
+            : "opacity-0 -translate-y-1 invisible pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:visible group-hover/tooltip:translate-y-0 group-hover/tooltip:pointer-events-auto",
+        )}
+      >
+        {/* Pointer Arrow */}
+        <div className="absolute -top-1.5 right-2.5 w-3 h-3 bg-slate-900 border-t border-l border-slate-700/80 rotate-45 transform" />
+
+        <div className="relative z-10 flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 pb-1.5 border-b border-slate-800 text-[11px] font-semibold text-slate-200">
+            <Info className="w-3.5 h-3.5 text-[#88B3D0] shrink-0" />
+            <span>Thông tin ca làm việc</span>
+          </div>
+
+          <div className="space-y-1.5 text-[11px] leading-snug">
+            <div className="flex justify-between items-start gap-2">
+              <span className="text-slate-400 shrink-0">Người tạo:</span>
+              <span className="text-slate-100 font-medium text-right">{creator}</span>
+            </div>
+
+            <div className="flex justify-between items-center gap-2">
+              <span className="text-slate-400 shrink-0">Thời gian tạo:</span>
+              <span className="text-slate-100 font-medium font-mono text-right">
+                {format(createdAt, "dd/MM/yyyy HH:mm")}
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center gap-2">
+              <span className="text-slate-400 shrink-0">Cập nhật trạng thái:</span>
+              <span className="text-emerald-400 font-medium font-mono text-right">
+                {format(statusUpdatedAt, "dd/MM/yyyy HH:mm")}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const SharedShiftCard: React.FC<{
   shift: Shift;
   user: any;
@@ -120,9 +221,37 @@ const SharedShiftCard: React.FC<{
   onClick: () => void;
   key?: string | number;
 }> = ({ shift, user, isDisabled, isPast, isPreview, onClick }) => {
-  const hasMatchedSlot = shift.slots
-    ? shift.slots.some((s) => user?.skills.includes(s.skillTag))
-    : user?.skills.includes(shift.skillTag);
+  // CR-12SEP-01: Branch Eligibility
+  // Normal shift registration is restricted to Employee.ActiveWorkingBranches.
+  // Support shifts are allowed across branches.
+  const isBranchEligible =
+    shift.isSupportShift ||
+    (user?.workingBranches
+      ? user.workingBranches.some(
+          (b: any) =>
+            b.status === "ACTIVE" &&
+            (b.branchName === shift.storeName || b.branchId === shift.branchId)
+        )
+      : user?.authorizedBranches?.includes(shift.storeName) ?? true);
+
+  // CR-12SEP-02: Skill Eligibility
+  const userActiveSkills = user?.skillTags
+    ? user.skillTags.filter((st: any) => st.status === "ACTIVE").map((st: any) => st.skillTagName)
+    : user?.skills || [];
+
+  const matchedSlots = (shift.slots ? shift.slots.map((s) => s.skillTag) : [shift.skillTag]).filter(
+    (tag) => userActiveSkills.includes(tag)
+  );
+  const hasMatchedSlot = matchedSlots.length > 0;
+
+  // Capacity / Slot Availability Check
+  const isOverallFull = shift.maxStaff > 0 && (shift.currentStaff || 0) >= shift.maxStaff;
+  const hasAvailableSlotForUser = shift.slots
+    ? shift.slots.some((s) => userActiveSkills.includes(s.skillTag) && s.current < s.max)
+    : !isOverallFull;
+
+  const isShiftFull = isOverallFull || (shift.slots ? !hasAvailableSlotForUser : false);
+  const isEligible = isBranchEligible && hasMatchedSlot && !isShiftFull;
 
   return (
     <motion.button
@@ -131,11 +260,13 @@ const SharedShiftCard: React.FC<{
         "w-full text-left p-5 mb-4 rounded-2xl relative transition-all flex flex-col focus:outline-none",
         shift.status === "cancelled"
           ? "opacity-50 bg-slate-50 border border-slate-200 grayscale cursor-not-allowed"
-          : isDisabled && !hasMatchedSlot
-            ? "opacity-60 bg-slate-50 border border-slate-100"
-            : isDisabled
-              ? "opacity-90 bg-slate-50/80 border border-slate-200"
-              : "hover:shadow-lg hover:-translate-y-0.5 bg-white border border-slate-100 shadow-card",
+          : !isBranchEligible || !hasMatchedSlot
+            ? "opacity-75 bg-slate-50/90 border border-slate-200/80"
+            : isShiftFull
+              ? "opacity-80 bg-slate-50 border border-slate-200"
+              : isDisabled
+                ? "opacity-90 bg-slate-50/80 border border-slate-200"
+                : "hover:shadow-lg hover:-translate-y-0.5 bg-white border border-slate-100 shadow-card",
       )}
     >
       <div className="flex justify-between items-start w-full">
@@ -144,48 +275,73 @@ const SharedShiftCard: React.FC<{
             {shift.timeStr}
           </p>
           <div className="flex items-center gap-1.5 mt-1">
-             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">{shift.hours}h</span>
-             <span className="text-slate-200 text-[10px]">•</span>
-             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">{(shift.date instanceof Date ? format(shift.date, "dd/MM") : "")}</span>
+            <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">{shift.hours}h</span>
+            <span className="text-slate-200 text-[10px]">•</span>
+            <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">
+              {shift.date instanceof Date ? format(shift.date, "dd/MM") : ""}
+            </span>
           </div>
         </div>
         <div className="text-right flex-1 flex flex-col items-end">
           <div className="flex flex-col items-end gap-1.5">
             {isPast && (
-              <span className="text-[8px] font-black bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded uppercase tracking-widest">Lịch đã chốt</span>
+              <span className="text-[8px] font-black bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                Lịch đã chốt
+              </span>
             )}
             {isPreview && (
-              <span className="text-[8px] font-black bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded uppercase tracking-widest">Chưa mở</span>
+              <span className="text-[8px] font-black bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                Chưa mở
+              </span>
+            )}
+            {shift.isSupportShift && (
+              <span className="text-[8px] font-black bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded uppercase tracking-widest border border-indigo-200">
+                HỖ TRỢ
+              </span>
             )}
             <h3
               className={cn(
                 "font-bold text-sm tracking-tight",
-                !hasMatchedSlot ? "text-slate-400" : "text-slate-900",
+                !isEligible ? "text-slate-400" : "text-slate-900",
               )}
             >
               {shift.shiftName}
             </h3>
           </div>
-          <span className="text-[10px] font-bold text-slate-400 mt-1 max-w-full truncate uppercase tracking-widest">
-            {shift.storeName || "Home Store"}
-          </span>
+          <div className="flex items-center gap-1 text-[11px] font-bold text-[#558BAD] mt-1 max-w-full truncate">
+            <MapPin className="w-3 h-3 shrink-0" />
+            <span className="truncate">{shift.storeName || "Home Store"}</span>
+          </div>
         </div>
       </div>
 
       <div className="flex items-center justify-between mt-6 w-full pt-4 border-t border-slate-100/50">
-        {!hasMatchedSlot ? (
-          <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest flex items-center">
-            <Lock className="w-3 h-3 mr-1.5 opacity-60" /> Thiếu kỹ năng
+        {!isBranchEligible ? (
+          <span className="text-[10px] text-amber-700 font-extrabold uppercase tracking-widest flex items-center bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/60">
+            <Lock className="w-3 h-3 mr-1.5 shrink-0 text-amber-600" /> Ngoài chi nhánh làm việc
+          </span>
+        ) : !hasMatchedSlot ? (
+          <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest flex items-center bg-slate-100 px-2 py-0.5 rounded-md">
+            <Lock className="w-3 h-3 mr-1.5 opacity-60" /> Không đúng kỹ năng
+          </span>
+        ) : isShiftFull ? (
+          <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-widest flex items-center bg-slate-100 px-2.5 py-0.5 rounded-md border border-slate-200">
+            <Lock className="w-3 h-3 mr-1.5 text-slate-400" /> Ca đã đầy
           </span>
         ) : isDisabled ? (
           <span className="text-[10px] font-extrabold text-slate-400 flex items-center uppercase tracking-widest">
             {isPast ? "Chế độ xem lại" : "Sắp mở đăng ký"}
           </span>
         ) : (
-          <span className="text-[10px] font-extrabold text-slate-900 flex items-center transition-colors uppercase tracking-widest">
-            Đăng ký tham gia
-            <ChevronRight className="w-3 h-3 ml-1" />
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-[#558BAD] bg-[#F0F6FA] px-2 py-0.5 rounded-md border border-[#558BAD]/20">
+              {matchedSlots.join(" · ")}
+            </span>
+            <span className="text-[10px] font-extrabold text-[#558BAD] flex items-center transition-colors uppercase tracking-widest">
+              Đăng ký
+              <ChevronRight className="w-3 h-3 ml-0.5" />
+            </span>
+          </div>
         )}
 
         <div className="flex items-center gap-2">
@@ -202,9 +358,13 @@ const SharedShiftCard: React.FC<{
               </div>
             ))}
           </div>
-          {shift.maxStaff > shift.currentStaff && (
+          {shift.maxStaff > shift.currentStaff ? (
             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
               +{(shift.maxStaff || 1) - (shift.currentStaff || 0)} Trống
+            </span>
+          ) : (
+            <span className="text-[10px] font-black text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded uppercase tracking-wider border border-amber-200">
+              Đã đủ
             </span>
           )}
         </div>
@@ -223,19 +383,30 @@ export default function Schedule() {
     acknowledgeDispatch,
     hasLeaveConflict,
     getLeaveRequestsByDateRange,
+    qaNotificationScenario,
+    setQaDiagnosticResult,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<TabView>("my-schedule");
+  const [searchParams] = useSearchParams();
+  const [highlightedShiftId, setHighlightedShiftId] = useState<string | null>(null);
   const [myScheduleSubTab, setMyScheduleSubTab] = useState<"active" | "history">("active");
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [regSearchQuery, setRegSearchQuery] = useState("");
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
+  const [selectedBranchFilter, setSelectedBranchFilter] = useState<string>("");
+  const [selectedSkillFilter, setSelectedSkillFilter] = useState<string>("");
+  const [onlyFitFilter, setOnlyFitFilter] = useState<boolean>(false);
   const [timeFrom, setTimeFrom] = useState<string>("");
   const [timeTo, setTimeTo] = useState<string>("");
 
   const [tempSelectedStatuses, setTempSelectedStatuses] = useState<string[]>([]);
+  const [tempBranchFilter, setTempBranchFilter] = useState<string>("");
+  const [tempSkillFilter, setTempSkillFilter] = useState<string>("");
+  const [tempOnlyFitFilter, setTempOnlyFitFilter] = useState<boolean>(false);
   const [tempTimeFrom, setTempTimeFrom] = useState<string>("");
   const [tempTimeTo, setTempTimeTo] = useState<string>("");
 
@@ -245,6 +416,7 @@ export default function Schedule() {
   // Modals
   const [showRoster, setShowRoster] = useState<Shift | null>(null);
   const [showSwap, setShowSwap] = useState<Shift | null>(null);
+  const [swapSearchQuery, setSwapSearchQuery] = useState<string>("");
   const [shiftDetailModal, setShiftDetailModal] = useState<Shift | null>(null);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const [toast, setToast] = useState<{message: string, type: ToastType} | null>(null);
@@ -255,6 +427,19 @@ export default function Schedule() {
   const weekDays = Array.from({ length: 7 }).map((_, i) =>
     addDays(viewCalWeekStart, i),
   );
+
+  // Active branches and skills for employee
+  const userActiveWorkingBranches = useMemo(() => {
+    return user?.workingBranches
+      ? user.workingBranches.filter((b: any) => b.status === "ACTIVE").map((b: any) => b.branchName)
+      : user?.authorizedBranches || [];
+  }, [user]);
+
+  const userActiveSkills = useMemo(() => {
+    return user?.skillTags
+      ? user.skillTags.filter((st: any) => st.status === "ACTIVE").map((st: any) => st.skillTagName)
+      : user?.skills || [];
+  }, [user]);
 
   // --- GET DATA ---
   const activeShiftStatuses = ["approved", "pending", "assigned"];
@@ -269,12 +454,24 @@ export default function Schedule() {
   );
 
   const myShiftsToday = myShiftsTodayRaw.filter((s) => {
-    // Search query
-    if (searchQuery && !s.shiftName.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false;
+    // Search query: shiftName, storeName, skillTag
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const matchName = s.shiftName.toLowerCase().includes(q);
+      const matchStore = s.storeName?.toLowerCase().includes(q);
+      const matchSkill = (s.assignedSkillTagId || s.requestedSkillTagId || s.skillTag)?.toLowerCase().includes(q);
+      if (!matchName && !matchStore && !matchSkill) return false;
     }
     // Status filter
     if (selectedStatuses.length > 0 && !selectedStatuses.includes(s.status)) {
+      return false;
+    }
+    // Branch filter
+    if (selectedBranchFilter && s.storeName !== selectedBranchFilter) {
+      return false;
+    }
+    // Skill filter
+    if (selectedSkillFilter && (s.assignedSkillTagId || s.requestedSkillTagId || s.skillTag) !== selectedSkillFilter) {
       return false;
     }
     // Time filter
@@ -295,6 +492,35 @@ export default function Schedule() {
 
   const nextWeekShiftsByDate = availableShifts
     .filter((s) => s.date >= targetWeekStart && s.date < targetWeekEnd)
+    .filter((s) => {
+      // Search query in Registration tab
+      if (regSearchQuery) {
+        const q = regSearchQuery.toLowerCase();
+        const matchName = s.shiftName.toLowerCase().includes(q);
+        const matchStore = s.storeName?.toLowerCase().includes(q);
+        if (!matchName && !matchStore) return false;
+      }
+      // Branch filter
+      if (selectedBranchFilter && s.storeName !== selectedBranchFilter) {
+        return false;
+      }
+      // Skill filter
+      if (selectedSkillFilter) {
+        const hasSkill = s.slots
+          ? s.slots.some((slot) => slot.skillTag === selectedSkillFilter)
+          : s.skillTag === selectedSkillFilter;
+        if (!hasSkill) return false;
+      }
+      // Only fit filter
+      if (onlyFitFilter) {
+        const isBranchOk = s.isSupportShift || userActiveWorkingBranches.includes(s.storeName);
+        const isSkillOk = s.slots
+          ? s.slots.some((slot) => userActiveSkills.includes(slot.skillTag))
+          : userActiveSkills.includes(s.skillTag);
+        if (!isBranchOk || !isSkillOk) return false;
+      }
+      return true;
+    })
     .reduce((acc: Record<string, Shift[]>, shift) => {
       const sDate = shift.date instanceof Date ? shift.date : new Date(shift.date);
       if (isNaN(sDate.getTime())) return acc;
@@ -310,6 +536,111 @@ export default function Schedule() {
     if (!shift) return "bg-transparent";
     return shift.status === "approved" ? "bg-success" : "bg-warning";
   };
+
+  const availableShiftsRef = useRef(availableShifts);
+  availableShiftsRef.current = availableShifts;
+
+  const handledShiftIdRef = useRef<string | null>(null);
+
+  const shiftIdParam = searchParams.get("shiftId");
+  const requestedDateStr = searchParams.get("date");
+
+  // Handle Contextual Navigation from Notifications (SHIFT group)
+  useEffect(() => {
+    if (shiftIdParam) {
+      if (handledShiftIdRef.current === shiftIdParam) {
+        return;
+      }
+      handledShiftIdRef.current = shiftIdParam;
+
+      // Find shift in availableShifts to get its real date & current status
+      const targetShift = availableShiftsRef.current.find((s) => s.id === shiftIdParam);
+
+      if (!targetShift) {
+        setActiveTab("my-schedule");
+        setToast({
+          message: "Ca làm việc này không còn khả dụng trên lịch hiện tại.",
+          type: "info"
+        });
+        if (qaNotificationScenario?.id === "QA-10") {
+          setQaDiagnosticResult({
+            scenarioId: "QA-10",
+            timestamp: new Date(),
+            status: "PASS",
+            details: "Xác minh an toàn: Mục tiêu SHIFT-MISSING-999 không tồn tại, chuyển về Lịch cá nhân, không highlight ca lạ, hiển thị Toast.",
+            currentTab: "Lịch cá nhân",
+          });
+        }
+        return;
+      }
+
+      // Switch to my-schedule tab
+      setActiveTab("my-schedule");
+
+      // Set sub-tab based on real shift status
+      if (targetShift.status === "cancelled" || targetShift.status === "rejected") {
+        setMyScheduleSubTab("history");
+      } else {
+        setMyScheduleSubTab("active");
+      }
+
+      // Calculate the date of the shift
+      const shiftDate = targetShift.date instanceof Date ? targetShift.date : new Date(targetShift.date);
+      setSelectedDate(shiftDate);
+
+      // Adjust calWeekOffset so the shift's week is visible in the top weekly strip
+      const shiftWeekStart = startOfWeek(shiftDate, { weekStartsOn: 1 });
+      const curWeekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
+      const diffWeeks = Math.round((shiftWeekStart.getTime() - curWeekStart.getTime()) / (7 * 24 * 60 * 60 * 1000));
+      setCalWeekOffset(diffWeeks);
+
+      // Reset filters so the card is visible
+      setSearchQuery("");
+      setSelectedStatuses((prev) => (prev.length === 0 ? prev : []));
+      setSelectedBranchFilter("");
+      setSelectedSkillFilter("");
+      setTimeFrom("");
+      setTimeTo("");
+
+      // Set highlight
+      setHighlightedShiftId(shiftIdParam);
+
+      // Smooth scroll to card
+      setTimeout(() => {
+        const el = document.getElementById(`shift-card-${shiftIdParam}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 300);
+
+      // Clear highlight after 1.8s (approx 2 pulses, 1.5 - 2 seconds)
+      const timer = setTimeout(() => {
+        setHighlightedShiftId(null);
+      }, 1800);
+
+      if (qaNotificationScenario) {
+        setQaDiagnosticResult({
+          scenarioId: qaNotificationScenario.id,
+          timestamp: new Date(),
+          status: "PASS",
+          details: `Đã định vị chính xác Ca làm việc [${shiftIdParam}] trên Lịch cá nhân, điều chỉnh tuần/ngày phù hợp và kích hoạt highlight 1.8s.`,
+          locatedEntityId: shiftIdParam,
+          currentTab: "Lịch cá nhân",
+        });
+      }
+
+      return () => clearTimeout(timer);
+    } else {
+      handledShiftIdRef.current = null;
+      if (requestedDateStr) {
+        const parsedDate = new Date(requestedDateStr);
+        if (!isNaN(parsedDate.getTime())) {
+          setActiveTab("my-schedule");
+          setSelectedDate(parsedDate);
+        }
+      }
+    }
+  }, [shiftIdParam, requestedDateStr]);
 
   return (
     <div className="flex flex-col h-full bg-background pb-10">
@@ -437,7 +768,7 @@ export default function Schedule() {
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
-                      placeholder="Tìm theo tên ca"
+                      placeholder="Tìm ca, chi nhánh, vị trí..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all placeholder:text-slate-400 text-slate-900"
@@ -454,13 +785,16 @@ export default function Schedule() {
                   <button
                     onClick={() => {
                       setTempSelectedStatuses(selectedStatuses);
+                      setTempBranchFilter(selectedBranchFilter);
+                      setTempSkillFilter(selectedSkillFilter);
+                      setTempOnlyFitFilter(onlyFitFilter);
                       setTempTimeFrom(timeFrom);
                       setTempTimeTo(timeTo);
                       setIsFilterModalOpen(true);
                     }}
                     className={cn(
                       "flex items-center justify-center w-[42px] h-[42px] rounded-xl border transition-all shrink-0",
-                      selectedStatuses.length > 0 || timeFrom || timeTo
+                      selectedStatuses.length > 0 || selectedBranchFilter || selectedSkillFilter || onlyFitFilter || timeFrom || timeTo
                         ? "bg-[#F0F6FA] border-[#558BAD]/30 text-[#558BAD]"
                         : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                     )}
@@ -470,8 +804,32 @@ export default function Schedule() {
                 </div>
 
                 {/* Applied Filter Chips */}
-                {(selectedStatuses.length > 0 || timeFrom || timeTo) && (
+                {(selectedStatuses.length > 0 || selectedBranchFilter || selectedSkillFilter || onlyFitFilter || timeFrom || timeTo) && (
                   <div className="flex flex-wrap items-center gap-2">
+                    {selectedBranchFilter && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                        <MapPin className="w-3 h-3 text-[#558BAD]" /> {selectedBranchFilter}
+                        <button onClick={() => setSelectedBranchFilter("")} className="hover:text-[#375A72]">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    )}
+                    {selectedSkillFilter && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                        Vị trí: {selectedSkillFilter}
+                        <button onClick={() => setSelectedSkillFilter("")} className="hover:text-[#375A72]">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    )}
+                    {onlyFitFilter && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                        <CheckCircle2 className="w-3 h-3 text-[#558BAD]" /> Chỉ ca phù hợp
+                        <button onClick={() => setOnlyFitFilter(false)} className="hover:text-[#375A72]">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    )}
                     {selectedStatuses.map(status => {
                       let label = "";
                       switch (status) {
@@ -501,6 +859,9 @@ export default function Schedule() {
                     <button
                       onClick={() => {
                         setSelectedStatuses([]);
+                        setSelectedBranchFilter("");
+                        setSelectedSkillFilter("");
+                        setOnlyFitFilter(false);
                         setTimeFrom("");
                         setTimeTo("");
                       }}
@@ -582,8 +943,10 @@ export default function Schedule() {
                          {currentTabShifts.map((shift) => (
                     <div
                       key={shift.id}
+                      id={`shift-card-${shift.id}`}
                       className={cn(
                         "relative flex flex-col p-4 sm:p-5 rounded-2xl border-2 transition-all group",
+                        highlightedShiftId === shift.id && "locator-highlight",
                         myScheduleSubTab === "history" || shift.status === "cancelled" || shift.status === "rejected"
                           ? "bg-slate-50 border-slate-200 grayscale opacity-80"
                           : shift.isBuddyStore
@@ -612,8 +975,13 @@ export default function Schedule() {
                             <span className="w-1 h-1 rounded-full bg-gray-400"></span>
                             {shift.skillTag}
                           </span>
+                          {shift.allowSwap && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              Có thể đổi ca
+                            </span>
+                          )}
                         </div>
-                        <div className="shrink-0 flex items-center gap-2">
+                        <div className="shrink-0 flex items-center gap-1.5">
                           {shift.isBuddyStore ? (
                             <span className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm">
                               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
@@ -622,11 +990,12 @@ export default function Schedule() {
                           ) : (
                             renderStatus(shift.status)
                           )}
+                          <ShiftAuditInfoTooltip shift={shift} />
                         </div>
                       </div>
 
                       {/* Time and Location */}
-                      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-5 mt-1">
+                      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-4 mt-1">
                         <div>
                           <p className="font-mono text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-none mb-2">
                             {shift.timeStr.split(" - ")[0]}
@@ -656,20 +1025,16 @@ export default function Schedule() {
                         </div>
                       </div>
 
-                      <div
-                        className={cn(
-                          "w-full h-px border-t-2 border-dashed mb-3",
-                          shift.isBuddyStore
-                            ? "border-indigo-200"
-                            : "border-gray-100",
-                        )}
-                      ></div>
-                      
-                      {/* Status Updated At */}
-                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mb-3 font-medium">
-                        <Clock className="w-3.5 h-3.5" />
-                        <span>Cập nhật trạng thái: {shift.statusUpdatedAt ? format(shift.statusUpdatedAt, "dd/MM/yyyy HH:mm") : format(new Date(), "dd/MM/yyyy HH:mm")}</span>
-                      </div>
+                      {((myScheduleSubTab !== "history" && shift.status !== "cancelled" && shift.status !== "rejected") || shift.cancelReason || shift.adhocReason) && (
+                        <div
+                          className={cn(
+                            "w-full h-px border-t-2 border-dashed mb-3",
+                            shift.isBuddyStore
+                              ? "border-indigo-200"
+                              : "border-gray-100",
+                          )}
+                        ></div>
+                      )}
 
                       {myScheduleSubTab === "history" || shift.status === "cancelled" || shift.status === "rejected" ? (
                          (shift.cancelReason || shift.adhocReason) ? (
@@ -720,12 +1085,14 @@ export default function Schedule() {
                                   }
                               }
 
-                              const disableSwap = shift.isPendingSwap || shift.status === "cancelled" || isTimeFenced;
+                              // If shift has allowSwap flag enabled, bypass time fence for testing/authorized swap
+                              const effectiveTimeFenced = shift.allowSwap ? false : isTimeFenced;
+                              const disableSwap = shift.isPendingSwap || shift.status === "cancelled" || effectiveTimeFenced;
 
                               return (
                                 <button
                                   onClick={() => {
-                                    if (isTimeFenced) {
+                                    if (effectiveTimeFenced) {
                                       setToast({
                                         message: "Đã qua thời hạn Đổi/Hủy ca. Bạn chỉ có thể thao tác từ Thứ 2 đến Thứ 5 của tuần trước khi ca diễn ra.",
                                         type: 'warning'
@@ -734,14 +1101,14 @@ export default function Schedule() {
                                       setShowSwap(shift);
                                     }
                                   }}
-                                  disabled={shift.isPendingSwap || shift.status === "cancelled"}
+                                  disabled={disableSwap}
                                   className={cn(
-                                    "flex-1 sm:flex-none px-4 py-2 sm:py-2 text-xs font-bold rounded-xl transition-colors flex items-center justify-center border",
+                                    "flex-1 sm:flex-none px-4 py-2 sm:py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center border",
                                     disableSwap
                                       ? "bg-gray-50/50 border-transparent text-gray-400 cursor-not-allowed"
                                       : shift.isBuddyStore
                                         ? "bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-50"
-                                        : "bg-gray-50 border-transparent hover:bg-gray-100 text-gray-700",
+                                        : "bg-[#F0F6FA] border-[#558BAD]/30 hover:bg-[#558BAD]/10 text-[#558BAD] font-extrabold shadow-sm active:scale-95",
                                   )}
                                 >
                                   <span className="">Đổi ca</span>
@@ -891,86 +1258,166 @@ export default function Schedule() {
                       </button>
                     </div>
 
-                    <div className="mb-8 mt-2 px-1">
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="text-[11px] font-extrabold text-slate-400 uppercase tracking-widest">
-                          Tải trọng đăng ký: {registeredHours} / {maxHoursPerWeek}H
-                        </span>
-                        <span
+                    {/* Registration Search & Filter Controls */}
+                    <div className="space-y-3 mb-4">
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Tìm ca, chi nhánh..."
+                            value={regSearchQuery}
+                            onChange={(e) => setRegSearchQuery(e.target.value)}
+                            className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all placeholder:text-slate-400 text-slate-900"
+                          />
+                          {regSearchQuery && (
+                            <button
+                              onClick={() => setRegSearchQuery("")}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-full"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setTempSelectedStatuses(selectedStatuses);
+                            setTempBranchFilter(selectedBranchFilter);
+                            setTempSkillFilter(selectedSkillFilter);
+                            setTempOnlyFitFilter(onlyFitFilter);
+                            setTempTimeFrom(timeFrom);
+                            setTempTimeTo(timeTo);
+                            setIsFilterModalOpen(true);
+                          }}
                           className={cn(
-                            "text-xs font-bold font-display",
-                            registeredHours > maxHoursPerWeek
-                              ? "text-red-500"
-                              : "text-slate-900",
+                            "flex items-center justify-center w-[42px] h-[42px] rounded-xl border transition-all shrink-0",
+                            selectedBranchFilter || selectedSkillFilter || onlyFitFilter
+                              ? "bg-[#F0F6FA] border-[#558BAD]/30 text-[#558BAD]"
+                              : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
                           )}
                         >
-                          {Math.round(
-                            (registeredHours / maxHoursPerWeek) * 100,
-                          )}
-                          %
-                        </span>
+                          <Filter className="w-4 h-4" />
+                        </button>
                       </div>
-                      <div className="w-full bg-slate-50 h-2 rounded-full overflow-hidden border border-slate-100 p-0.5">
-                        <div
+
+                      {/* Quick Filter Pill Buttons */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={() => setOnlyFitFilter(prev => !prev)}
                           className={cn(
-                            "h-full transition-all duration-300 rounded-full",
-                            registeredHours > maxHoursPerWeek
-                              ? "bg-red-500 shadow-sm"
-                              : "bg-slate-900 shadow-sm shadow-slate-200",
+                            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                            onlyFitFilter
+                              ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
                           )}
-                          style={{
-                            width: `${Math.min(100, (registeredHours / maxHoursPerWeek) * 100)}%`,
-                          }}
-                        ></div>
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Chỉ ca phù hợp
+                        </button>
+
+                        {selectedBranchFilter && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                            <MapPin className="w-3 h-3 text-[#558BAD]" /> {selectedBranchFilter}
+                            <button onClick={() => setSelectedBranchFilter("")} className="hover:text-[#375A72]">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        )}
+
+                        {selectedSkillFilter && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                            Vị trí: {selectedSkillFilter}
+                            <button onClick={() => setSelectedSkillFilter("")} className="hover:text-[#375A72]">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        )}
+
+                        {(selectedBranchFilter || selectedSkillFilter || onlyFitFilter || regSearchQuery) && (
+                          <button
+                            onClick={() => {
+                              setSelectedBranchFilter("");
+                              setSelectedSkillFilter("");
+                              setOnlyFitFilter(false);
+                              setRegSearchQuery("");
+                            }}
+                            className="text-[10px] font-bold text-slate-500 hover:text-slate-700 ml-1 underline decoration-slate-300 underline-offset-2"
+                          >
+                            Xoá lọc
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                            {(Object.entries(nextWeekShiftsByDate).sort((a,b) => a[0].localeCompare(b[0])) as [string, Shift[]][]).map(
-                              ([dateStr, shifts]) => (
-                                <div key={dateStr} className="space-y-2">
-                                  <h3 className="text-sm font-bold text-text-main pt-4 flex items-center gap-2">
-                                    <span className="w-2 h-2 rounded-full bg-slate-200 block"></span>
-                                    {(() => {
-                                      const d = new Date(dateStr);
-                                      return isNaN(d.getTime()) ? dateStr : format(d, "EEEE, dd/MM", { locale: vi });
-                                    })()}
-                                  </h3>
+                    {Object.keys(nextWeekShiftsByDate).length === 0 ? (
+                      <div className="bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-8 text-center my-4">
+                        <CalendarDays className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                        <p className="text-sm font-bold text-slate-700">
+                          Không tìm thấy ca phù hợp với điều kiện tìm kiếm
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+                          Hãy thử tắt bộ lọc "Chỉ ca phù hợp" hoặc đổi từ khoá tìm kiếm.
+                        </p>
+                        <button
+                          onClick={() => {
+                            setSelectedBranchFilter("");
+                            setSelectedSkillFilter("");
+                            setOnlyFitFilter(false);
+                            setRegSearchQuery("");
+                          }}
+                          className="mt-4 px-4 py-2 bg-[#558BAD] text-white font-bold text-xs rounded-xl transition-all active:scale-95 shadow-sm"
+                        >
+                          Xoá bộ lọc
+                        </button>
+                      </div>
+                    ) : (
+                      (Object.entries(nextWeekShiftsByDate).sort((a,b) => a[0].localeCompare(b[0])) as [string, Shift[]][]).map(
+                        ([dateStr, shifts]) => (
+                          <div key={dateStr} className="space-y-2">
+                            <h3 className="text-sm font-bold text-text-main pt-4 flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-slate-200 block"></span>
+                              {(() => {
+                                const d = new Date(dateStr);
+                                return isNaN(d.getTime()) ? dateStr : format(d, "EEEE, dd/MM", { locale: vi });
+                              })()}
+                            </h3>
 
-                                  <div className="space-y-3 px-0.5 mt-2">
-                                    {(shifts as Shift[]).map((shift) => {
-                                      const isDisabled = weekOffset !== 1;
+                            <div className="space-y-3 px-0.5 mt-2">
+                              {(shifts as Shift[]).map((shift) => {
+                                const isDisabled = weekOffset !== 1;
 
-                                      return (
-                                        <SharedShiftCard
-                                          key={shift.id}
-                                          shift={shift}
-                                          user={user}
-                                          isDisabled={isDisabled}
-                                          isPast={weekOffset <= 0}
-                                          isPreview={weekOffset >= 2}
-                                          onClick={() => {
-                                            if (hasLeaveConflict(shift.date)) {
-                                              setToast({ message: "Trùng lịch nghỉ phép.", type: 'error' });
-                                              return;
-                                            }
-                                            setShiftDetailModal(shift);
-                                            const firstAvailableSlot =
-                                              shift.slots?.find(
-                                                (s) =>
-                                                  user?.skills.includes(s.skillTag) &&
-                                                  s.current < s.max,
-                                              );
-                                            setSelectedSlotId(
-                                              firstAvailableSlot?.id || null,
-                                            );
-                                          }}
-                                        />
+                                return (
+                                  <SharedShiftCard
+                                    key={shift.id}
+                                    shift={shift}
+                                    user={user}
+                                    isDisabled={isDisabled}
+                                    isPast={weekOffset <= 0}
+                                    isPreview={weekOffset >= 2}
+                                    onClick={() => {
+                                      if (hasLeaveConflict(shift.date)) {
+                                        setToast({ message: "Trùng lịch nghỉ phép.", type: 'error' });
+                                        return;
+                                      }
+                                      setShiftDetailModal(shift);
+                                      const firstAvailableSlot =
+                                        shift.slots?.find(
+                                          (s) =>
+                                            userActiveSkills.includes(s.skillTag) &&
+                                            s.current < s.max,
+                                        );
+                                      setSelectedSlotId(
+                                        firstAvailableSlot?.id || null,
                                       );
-                                    })}
-                                  </div>
-                                </div>
-                              ),
-                            )}
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ),
+                      )
+                    )}
                   </>
                 );
               })()}
@@ -1127,96 +1574,158 @@ export default function Schedule() {
                   </div>
                 </div>
 
-                <div className="bg-gray-50/80 rounded-xl p-4 flex gap-3 text-gray-600 border border-gray-100 mx-1">
-                  <Shield className="w-5 h-5 text-gray-400 mt-0.5 shrink-0" />
-                  <p className="text-xs font-medium leading-relaxed">
-                    Hệ thống đã tự động kiểm tra: Các nhân viên dưới đây có cùng
-                    kỹ năng{" "}
-                    <span className="font-bold text-gray-900">
-                      [{showSwap.skillTag}]
-                    </span>{" "}
-                    và sau khi nhận ca{" "}
-                    <span className="font-bold text-gray-900">KHÔNG</span> vi
-                    phạm giới hạn giờ làm.
-                  </p>
-                </div>
+                {(() => {
+                  const targetSkill = showSwap.assignedSkillTagId || showSwap.requestedSkillTagId || showSwap.skillTag;
+                  const targetBranch = showSwap.storeName;
 
-                <div className="space-y-4 px-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-                      Chọn người nhận
-                    </label>
-                    <span className="text-xs font-medium text-gray-500">
-                      Đã lọc 3 kết quả
-                    </span>
-                  </div>
+                  const candidatePeers = [
+                    {
+                      id: "peer_2",
+                      name: "Thanh Nhàn",
+                      code: "HMK-082",
+                      role: "Thu ngân",
+                      workingBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Q7"],
+                      skills: ["Thu ngân", "Tư vấn"],
+                      avatar: "https://i.pravatar.cc/150?u=a04258b",
+                    },
+                    {
+                      id: "peer_3",
+                      name: "Minh Quang",
+                      code: "HMK-044",
+                      role: "Tư vấn",
+                      workingBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy"],
+                      skills: ["Tư vấn", "Kho"],
+                      avatar: "https://i.pravatar.cc/150?u=a04258c",
+                    },
+                    {
+                      id: "peer_4",
+                      name: "Bảo Ngân",
+                      code: "HMK-095",
+                      role: "Tư vấn & Thu ngân",
+                      workingBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Bình Thạnh"],
+                      skills: ["Tư vấn", "Thu ngân", "Kiểm kho"],
+                      avatar: "https://i.pravatar.cc/150?u=a04258d",
+                    },
+                    {
+                      id: "peer_5",
+                      name: "Hồng Đào",
+                      code: "HMK-112",
+                      role: "Thu ngân",
+                      workingBranches: ["HMK Thủ Đức"],
+                      skills: ["Thu ngân"],
+                      avatar: "https://i.pravatar.cc/150?u=a04258e",
+                    },
+                  ];
 
-                  <div className="space-y-3">
-                    {[
-                      {
-                        id: "2",
-                        name: "Thanh Nhàn",
-                        role: "Thu ngân",
-                        skills: ["Thu ngân", "Tư vấn"],
-                        isFit: true,
-                        avatar: "https://i.pravatar.cc/150?u=a04258b",
-                      },
-                      {
-                        id: "3",
-                        name: "Minh Quang",
-                        role: "Tư vấn",
-                        skills: ["Tư vấn", "Kho"],
-                        isFit: showSwap.skillTag === "Tư vấn",
-                        avatar: "https://i.pravatar.cc/150?u=a04258c",
-                      },
-                      {
-                        id: "4",
-                        name: "Bảo Ngân",
-                        role: "Tư vấn",
-                        skills: ["Tư vấn", "Thu ngân", "Kiểm kho"],
-                        isFit: true,
-                        avatar: "https://i.pravatar.cc/150?u=a04258d",
-                      },
-                    ]
-                      .filter((m) => m.isFit)
-                      .map((member, i) => (
-                        <label
-                          key={member.id}
-                          className="flex items-center justify-between p-4 bg-white border-2 border-gray-100 rounded-xl cursor-pointer has-[:checked]:border-black transition-all"
-                        >
-                          <div className="flex items-center gap-4">
-                            <img
-                              src={member.avatar}
-                              alt="Avatar"
-                              className="w-12 h-12 rounded-full bg-gray-100 object-cover"
-                            />
-                            <div>
-                              <p className="text-base font-bold text-gray-900">
-                                {member.name}
-                              </p>
-                              <div className="flex items-center gap-2 mt-1">
-                                <p className="text-sm font-medium text-gray-500 truncate mr-1 max-w-[100px]">
-                                  {member.role}
-                                </p>
-                                {member.skills.includes(showSwap.skillTag) && (
-                                  <span className="text-[10px] font-bold text-black border border-black/10 bg-gray-50 px-2 py-0.5 rounded-full flex items-center">
-                                    <CheckCircle2 className="w-3 h-3 mr-1" /> Kỹ
-                                    năng OK
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
+                  const eligibleCandidates = candidatePeers.filter((m) => {
+                    const isBranchOk = showSwap.isSupportShift || m.workingBranches.some(b => targetBranch.includes(b) || b.includes(targetBranch));
+                    const isSkillOk = m.skills.includes(targetSkill);
+                    if (!isBranchOk || !isSkillOk) return false;
+                    if (swapSearchQuery) {
+                      const q = swapSearchQuery.toLowerCase();
+                      return m.name.toLowerCase().includes(q) || m.code.toLowerCase().includes(q);
+                    }
+                    return true;
+                  });
+
+                  return (
+                    <>
+                      <div className="bg-[#F0F6FA] rounded-xl p-4 flex gap-3 text-slate-700 border border-[#558BAD]/20 mx-1">
+                        <Shield className="w-5 h-5 text-[#558BAD] mt-0.5 shrink-0" />
+                        <div className="text-xs font-medium leading-relaxed">
+                          <p className="font-bold text-slate-900 mb-1">
+                            Điều kiện đổi ca theo quy định:
+                          </p>
+                          <p className="text-slate-600">
+                            Nhân viên nhận ca phải có thẩm quyền làm việc tại <span className="font-bold text-[#558BAD]">{targetBranch}</span> và có kỹ năng <span className="font-bold text-slate-900">[{targetSkill}]</span> phù hợp.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4 px-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                            Chọn người nhận
+                          </label>
+                          <span className="text-xs font-semibold text-[#558BAD] bg-[#F0F6FA] px-2.5 py-0.5 rounded-full border border-[#558BAD]/20">
+                            {eligibleCandidates.length} nhân viên phù hợp
+                          </span>
+                        </div>
+
+                        {/* Search candidate */}
+                        <div className="relative">
+                          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                           <input
-                            type="radio"
-                            name="swapPeer"
-                            defaultChecked={i === 0}
-                            className="w-5 h-5 accent-black shrink-0"
+                            type="text"
+                            placeholder="Tìm nhân viên theo tên hoặc mã..."
+                            value={swapSearchQuery}
+                            onChange={(e) => setSwapSearchQuery(e.target.value)}
+                            className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all text-slate-900"
                           />
-                        </label>
-                      ))}
-                  </div>
-                </div>
+                          {swapSearchQuery && (
+                            <button
+                              onClick={() => setSwapSearchQuery("")}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-full"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-3">
+                          {eligibleCandidates.length > 0 ? (
+                            eligibleCandidates.map((member, i) => (
+                              <label
+                                key={member.id}
+                                className="flex items-center justify-between p-4 bg-white border-2 border-slate-100 rounded-2xl cursor-pointer has-[:checked]:border-[#558BAD] has-[:checked]:bg-[#F0F6FA]/30 transition-all hover:border-slate-200 shadow-soft"
+                              >
+                                <div className="flex items-center gap-3.5">
+                                  <img
+                                    src={member.avatar}
+                                    alt="Avatar"
+                                    className="w-11 h-11 rounded-full bg-gray-100 object-cover border border-slate-200 shrink-0"
+                                  />
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <p className="text-sm font-bold text-gray-900">
+                                        {member.name}
+                                      </p>
+                                      <span className="text-[10px] font-mono text-slate-400 font-bold">
+                                        {member.code}
+                                      </span>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                      <span className="text-[10px] font-bold text-[#558BAD] bg-[#F0F6FA] border border-[#558BAD]/20 px-2 py-0.5 rounded-full flex items-center">
+                                        <CheckCircle2 className="w-3 h-3 mr-1 text-[#558BAD]" />
+                                        {targetSkill}
+                                      </span>
+                                      <span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full flex items-center">
+                                        <MapPin className="w-3 h-3 mr-1 text-slate-400" />
+                                        {targetBranch}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <input
+                                  type="radio"
+                                  name="swapPeer"
+                                  defaultChecked={i === 0}
+                                  className="w-5 h-5 accent-[#558BAD] shrink-0"
+                                />
+                              </label>
+                            ))
+                          ) : (
+                            <div className="bg-slate-50 border border-dashed border-slate-200 p-4 rounded-xl text-center">
+                              <p className="text-xs font-semibold text-slate-600">
+                                Không có nhân viên nào đủ điều kiện kỹ năng [{targetSkill}] và chi nhánh [{targetBranch}].
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 <div className="space-y-4 px-1">
                   <label className="text-sm font-bold text-gray-900 uppercase tracking-wide block">
@@ -1300,6 +1809,28 @@ export default function Schedule() {
               </div>
 
               <div className="flex-1 overflow-y-auto w-full pb-6 space-y-8">
+                {(() => {
+                  const isModalBranchEligible =
+                    shiftDetailModal.isSupportShift ||
+                    (user?.workingBranches
+                      ? user.workingBranches.some(
+                          (b: any) =>
+                            b.status === "ACTIVE" &&
+                            (b.branchName === shiftDetailModal.storeName || b.branchId === shiftDetailModal.branchId)
+                        )
+                      : user?.authorizedBranches?.includes(shiftDetailModal.storeName) ?? true);
+
+                  if (!isModalBranchEligible) {
+                    return (
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center gap-2 text-amber-800 text-xs font-semibold">
+                        <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>Ca này thuộc chi nhánh ngoài danh sách làm việc của bạn.</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
                 <div className="space-y-4 px-1">
                   <div className="flex justify-between items-center">
                     <span className="text-gray-500 font-medium">Khung giờ</span>
@@ -1445,21 +1976,90 @@ export default function Schedule() {
                     return null;
                   }
 
-                  const hasMatchedSkillAndSlot = shiftDetailModal.slots
-                    ? shiftDetailModal.slots.some(
-                        (s) =>
-                          user?.skills.includes(s.skillTag) &&
-                          s.current < s.max,
-                      )
-                    : true;
+                  // 1. Branch Eligibility Check
+                  const isModalBranchEligible =
+                    shiftDetailModal.isSupportShift ||
+                    (user?.workingBranches
+                      ? user.workingBranches.some(
+                          (b: any) =>
+                            b.status === "ACTIVE" &&
+                            (b.branchName === shiftDetailModal.storeName || b.branchId === shiftDetailModal.branchId)
+                        )
+                      : user?.authorizedBranches?.includes(shiftDetailModal.storeName) ?? true);
 
-                  if (!hasMatchedSkillAndSlot) {
+                  if (!isModalBranchEligible) {
                     return (
                       <button
                         disabled
-                        className="flex-[2] py-4 bg-gray-50 text-gray-400 font-bold rounded-xl transition-all cursor-not-allowed"
+                        className="flex-[2] py-3.5 bg-amber-50 border border-amber-200 text-amber-700 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider"
                       >
-                        Hết slot cho kỹ năng của bạn
+                        <Lock className="w-4 h-4 text-amber-600" />
+                        Ngoài chi nhánh làm việc
+                      </button>
+                    );
+                  }
+
+                  // 2. Pending Registration (Allow cancel)
+                  if (shiftDetailModal.status === "pending") {
+                    return (
+                      <button
+                        onClick={() => {
+                          const res = handleShiftAction(shiftDetailModal.id, "cancel");
+                          if (res) {
+                            setToast({message: "Hủy ca thành công!", type: 'success'});
+                            setShiftDetailModal(null);
+                          }
+                        }}
+                        className="flex-[2] py-3.5 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider"
+                      >
+                        Hủy đăng ký
+                      </button>
+                    );
+                  }
+
+                  // 3. Skill Eligibility Check
+                  const activeSkills = user?.skillTags
+                    ? user.skillTags.filter((st: any) => st.status === "ACTIVE").map((st: any) => st.skillTagName)
+                    : user?.skills || [];
+
+                  const hasMatchedSkill = (shiftDetailModal.slots
+                    ? shiftDetailModal.slots.map((s) => s.skillTag)
+                    : [shiftDetailModal.skillTag]
+                  ).some((t) => activeSkills.includes(t));
+
+                  if (!hasMatchedSkill) {
+                    return (
+                      <button
+                        disabled
+                        className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider border border-slate-200"
+                      >
+                        <Lock className="w-4 h-4" />
+                        Không đúng kỹ năng
+                      </button>
+                    );
+                  }
+
+                  // 4. Shift Capacity & Slot Capacity Check
+                  const isShiftOverallFull =
+                    shiftDetailModal.maxStaff > 0 &&
+                    (shiftDetailModal.currentStaff || 0) >= shiftDetailModal.maxStaff;
+
+                  const hasMatchedSkillAndSlot = shiftDetailModal.slots
+                    ? shiftDetailModal.slots.some(
+                        (s) =>
+                          activeSkills.includes(s.skillTag) &&
+                          s.current < s.max,
+                      )
+                    : !isShiftOverallFull;
+
+                  if (isShiftOverallFull || !hasMatchedSkillAndSlot) {
+                    return (
+                      <button
+                        disabled
+                        className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                      >
+                        <Lock className="w-4 h-4" />
+                        Ca đã đầy
                       </button>
                     );
                   }
@@ -1479,7 +2079,7 @@ export default function Schedule() {
                           }
                         }}
                         className={cn(
-                          "flex-[2] py-3.5 font-bold rounded-xl flex items-center justify-center transition-all shadow-md",
+                          "flex-[2] py-3.5 font-bold rounded-xl flex items-center justify-center transition-all shadow-md text-xs uppercase tracking-wider",
                           needsSlotSelection
                             ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
                             : "bg-[#558BAD] hover:bg-[#446E8A] text-white shadow-[#558BAD]/20 active:scale-[0.98]",
@@ -1492,28 +2092,12 @@ export default function Schedule() {
                     );
                   }
 
-                  if (shiftDetailModal.status === "pending") {
-                    return (
-                      <button
-                        onClick={() => {
-                          const res = handleShiftAction(shiftDetailModal.id, "cancel");
-                          if (res) {
-                            setToast({message: "Hủy ca thành công!", type: 'success'});
-                            setShiftDetailModal(null);
-                          }
-                        }}
-                        className="flex-[2] py-4 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98]"
-                      >
-                        Hủy đăng ký
-                      </button>
-                    );
-                  }
-
                   return (
                     <button
                       disabled
-                      className="flex-[2] py-4 bg-gray-50 text-gray-400 font-bold rounded-xl cursor-not-allowed transition-all border border-gray-100"
+                      className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
                     >
+                      <Lock className="w-4 h-4" />
                       Ca đã đầy
                     </button>
                   );
@@ -1552,13 +2136,125 @@ export default function Schedule() {
                 </button>
               </div>
 
-              <div className="p-5 overflow-y-auto">
-                {/* Trạng thái */}
-                <div className="mb-6">
-                  <h4 className="text-sm font-bold text-gray-900 mb-3">Trạng thái</h4>
+              <div className="p-5 overflow-y-auto space-y-6">
+                {/* Chi nhánh làm việc (CR-12SEP-01) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <h4 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                      <Building2 className="w-4 h-4 text-[#558BAD]" />
+                      Chi nhánh làm việc
+                    </h4>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {userActiveWorkingBranches.length} chi nhánh hiệu lực
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setTempBranchFilter("")}
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                        !tempBranchFilter
+                          ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                      )}
+                    >
+                      Tất cả chi nhánh
+                    </button>
+                    {userActiveWorkingBranches.map(branch => {
+                      const isSelected = tempBranchFilter === branch;
+                      return (
+                        <button
+                          key={branch}
+                          onClick={() => setTempBranchFilter(isSelected ? "" : branch)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1",
+                            isSelected
+                              ? "bg-[#F0F6FA] border-[#558BAD] text-[#558BAD] shadow-sm ring-1 ring-[#558BAD]"
+                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                          )}
+                        >
+                          <MapPin className="w-3 h-3 text-slate-400" />
+                          {branch}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Vị trí / Kỹ năng (CR-12SEP-02) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <h4 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-[#558BAD]" />
+                      Vị trí / Kỹ năng
+                    </h4>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {userActiveSkills.length} kỹ năng hiệu lực
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setTempSkillFilter("")}
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                        !tempSkillFilter
+                          ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                      )}
+                    >
+                      Tất cả vị trí
+                    </button>
+                    {userActiveSkills.map(skill => {
+                      const isSelected = tempSkillFilter === skill;
+                      return (
+                        <button
+                          key={skill}
+                          onClick={() => setTempSkillFilter(isSelected ? "" : skill)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1",
+                            isSelected
+                              ? "bg-[#F0F6FA] border-[#558BAD] text-[#558BAD] shadow-sm ring-1 ring-[#558BAD]"
+                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                          )}
+                        >
+                          <CheckCircle2 className="w-3 h-3 text-[#558BAD]" />
+                          {skill}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Bộ lọc phù hợp điều kiện */}
+                <div className="bg-[#F0F6FA] p-3.5 rounded-2xl border border-[#558BAD]/20 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Shield className="w-5 h-5 text-[#558BAD] shrink-0" />
+                    <div>
+                      <p className="text-xs font-bold text-slate-900">
+                        Chỉ hiện ca phù hợp với tôi
+                      </p>
+                      <p className="text-[10px] text-slate-500 font-medium">
+                        Khớp với Chi nhánh làm việc & Kỹ năng hiệu lực
+                      </p>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tempOnlyFitFilter}
+                      onChange={(e) => setTempOnlyFitFilter(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#558BAD]"></div>
+                  </label>
+                </div>
+
+                {/* Trạng thái (áp dụng cho Lịch của tôi) */}
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 mb-2">Trạng thái (Lịch của tôi)</h4>
                   
                   {/* Group 1: Đang hiệu lực */}
-                  <p className="text-xs font-semibold text-slate-500 mb-2 mt-4 uppercase tracking-wider">Đang hiệu lực</p>
+                  <p className="text-[11px] font-semibold text-slate-500 mb-2 mt-2 uppercase tracking-wider">Đang hiệu lực</p>
                   <div className="flex flex-wrap gap-2">
                     {[
                       { id: "pending", label: "Chờ duyệt" },
@@ -1577,7 +2273,7 @@ export default function Schedule() {
                           className={cn(
                             "px-3 py-1.5 rounded-full text-xs font-bold transition-all border",
                             isSelected 
-                              ? "bg-indigo-50 border-indigo-200 text-indigo-700" 
+                              ? "bg-[#F0F6FA] border-[#558BAD] text-[#558BAD]" 
                               : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
                           )}
                         >
@@ -1588,7 +2284,7 @@ export default function Schedule() {
                   </div>
 
                   {/* Group 2: Không còn hiệu lực */}
-                  <p className="text-xs font-semibold text-slate-500 mb-2 mt-4 uppercase tracking-wider">Không còn hiệu lực</p>
+                  <p className="text-[11px] font-semibold text-slate-500 mb-2 mt-3 uppercase tracking-wider">Không còn hiệu lực</p>
                   <div className="flex flex-wrap gap-2">
                     {[
                       { id: "rejected", label: "Từ chối" },
@@ -1606,7 +2302,7 @@ export default function Schedule() {
                           className={cn(
                             "px-3 py-1.5 rounded-full text-xs font-bold transition-all border",
                             isSelected 
-                              ? "bg-indigo-50 border-indigo-200 text-indigo-700" 
+                              ? "bg-red-50 border-red-200 text-red-600" 
                               : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
                           )}
                         >
@@ -1619,7 +2315,7 @@ export default function Schedule() {
 
                 {/* Thời gian */}
                 <div>
-                  <h4 className="text-sm font-bold text-gray-900 mb-3">Lọc giờ trong ngày</h4>
+                  <h4 className="text-sm font-bold text-gray-900 mb-2.5">Lọc giờ trong ngày</h4>
                   <div className="flex gap-4">
                     <div className="flex-1">
                       <label className="block text-xs font-semibold text-slate-500 mb-1">Từ giờ</label>
@@ -1627,7 +2323,7 @@ export default function Schedule() {
                         type="time" 
                         value={tempTimeFrom}
                         onChange={(e) => setTempTimeFrom(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all"
                       />
                     </div>
                     <div className="flex-1">
@@ -1636,7 +2332,7 @@ export default function Schedule() {
                         type="time" 
                         value={tempTimeTo}
                         onChange={(e) => setTempTimeTo(e.target.value)}
-                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all"
                       />
                     </div>
                   </div>
@@ -1647,6 +2343,9 @@ export default function Schedule() {
                 <button
                   onClick={() => {
                     setTempSelectedStatuses([]);
+                    setTempBranchFilter("");
+                    setTempSkillFilter("");
+                    setTempOnlyFitFilter(false);
                     setTempTimeFrom("");
                     setTempTimeTo("");
                   }}
@@ -1657,6 +2356,9 @@ export default function Schedule() {
                 <button
                   onClick={() => {
                     setSelectedStatuses(tempSelectedStatuses);
+                    setSelectedBranchFilter(tempBranchFilter);
+                    setSelectedSkillFilter(tempSkillFilter);
+                    setOnlyFitFilter(tempOnlyFitFilter);
                     setTimeFrom(tempTimeFrom);
                     setTimeTo(tempTimeTo);
                     

@@ -13,10 +13,14 @@ import {
   CheckCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useApp } from "@/context/AppContext";
+import { useApp, AttendanceTicket } from "@/context/AppContext";
 import { motion, AnimatePresence } from "motion/react";
+import NotificationQaSwitcher from "@/components/NotificationQaSwitcher";
+import { QaScenario } from "@/types/qaNotification";
 
 type NotificationType = "system" | "task" | "approval" | "briefing";
+
+export type NotificationGroup = "TICKET" | "SHIFT" | "SHIFT_BRIEFING";
 
 interface NotificationProps {
   id: string;
@@ -29,6 +33,12 @@ interface NotificationProps {
   isUrgent?: boolean;
   isAcknowledged?: boolean;
   storeName?: string;
+  // Contextual Navigation
+  notificationGroup?: NotificationGroup;
+  ticketId?: string;
+  shiftId?: string;
+  briefingId?: string;
+  shiftDate?: string;
 }
 
 const mockNotifications: NotificationProps[] = [
@@ -39,7 +49,8 @@ const mockNotifications: NotificationProps[] = [
     message: "Đơn nghỉ phép của bạn đã được hệ thống ghi nhận. Phản hồi sẽ sớm được cập nhật.",
     time: "2 giờ trước",
     isRead: false,
-    navigateUrl: "/requests"
+    notificationGroup: "TICKET",
+    ticketId: "LR-001",
   },
   {
     id: "lr-noti-2",
@@ -48,7 +59,8 @@ const mockNotifications: NotificationProps[] = [
     message: "Đơn nghỉ phép tuần trước của bạn đã được duyệt.",
     time: "1 ngày trước",
     isRead: true,
-    navigateUrl: "/requests"
+    notificationGroup: "TICKET",
+    ticketId: "LR-002",
   },
   {
     id: "lr-noti-3",
@@ -57,25 +69,30 @@ const mockNotifications: NotificationProps[] = [
     message: "Đơn nghỉ phép của bạn bị từ chối. Lý do: Cửa hàng đang thiếu nhân sự trong ca này.",
     time: "2 ngày trước",
     isRead: true,
-    navigateUrl: "/requests"
+    notificationGroup: "TICKET",
+    ticketId: "LR-003",
   },
   {
     id: "app-1",
     type: "approval",
-    title: "Kết quả duyệt: Bổ sung Check-out",
+    title: "Cần xử lý: Bổ sung Check-out",
     message:
-      "Ticket của bạn (Ca Sáng, 21/05) đã được duyệt: Hợp lệ hóa do Lỗi hệ thống. Phần Check-out đã được cập nhật thành 12:00. Bạn có thể xem chi tiết trong Lịch sử chấm công.",
+      "Ticket của bạn (Ca Sáng, 30/07) chưa có dữ liệu check-out. Vui lòng kiểm tra và xử lý bổ sung công.",
     time: "2 phút trước",
     isRead: false,
+    notificationGroup: "TICKET",
+    ticketId: "TK-OUT-032",
   },
   {
     id: "app-2",
     type: "approval",
-    title: "Kết quả duyệt: Đi trễ",
+    title: "Cần xử lý: Bổ sung Check-in",
     message:
-      "Ticket của bạn (Ca Tối, 20/05) đã được duyệt: Khấu trừ UT 15 phút và Áp dụng mức phạt Đi trễ 50,000đ.",
+      "Hệ thống không ghi nhận giờ Check-in ca sáng (21/05). Vui lòng xử lý giải trình.",
     time: "10 phút trước",
     isRead: false,
+    notificationGroup: "TICKET",
+    ticketId: "TK-IN-017",
   },
   {
     id: "ns-1",
@@ -85,6 +102,8 @@ const mockNotifications: NotificationProps[] = [
       "Quản lý đã Handshake thay thế nhân sự cho Ca Chiều (Hôm nay) do bạn No-show quá hạn. Ca này đã bị Hủy trong Lịch làm việc của bạn.",
     time: "Vài giây trước",
     isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "case_cancelled_today",
   },
   {
     id: "sys-1",
@@ -94,24 +113,30 @@ const mockNotifications: NotificationProps[] = [
       "[Xung đột Lịch] Hệ thống tự động cấn trừ 30 phút (Travel Time) ca Sáng do bạn có ca Tối liền kề lúc 15:00 tại Cầu Giấy.",
     time: "5 phút trước",
     isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "case_approved_today",
   },
   {
     id: "sys-2",
     type: "system",
     title: "Phân công khẩn cấp (Chi viện Vận hành)",
     message:
-      "Bạn được phân công khẩn cấp vào vị trí 'Kho'. Hành động điều động chéo chuyên môn đã được lưu Audit Log đỏ.",
+      "Bạn được phân công vào ca làm việc tại HMK Cầu Giấy. Vui lòng kiểm tra chi tiết trong Lịch cá nhân.",
     time: "20 phút trước",
     isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "case_approved_cg_today",
   },
   {
     id: "0",
     type: "system",
-    title: "Lịch làm việc tuần sau đã công bố!",
+    title: "Lịch làm việc ca mới đã được xếp!",
     message:
-      "Bạn có 1 ca Điều phối làm việc tại cửa hàng khác (HMK Cầu Giấy). Vui lòng kiểm tra Lịch cá nhân.",
+      "Bạn có ca làm việc tại HMK Nguyễn Trãi (Ca Sáng). Vui lòng kiểm tra Lịch cá nhân.",
     time: "1 giờ trước",
     isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "case_approved_today",
   },
   {
     id: "1",
@@ -132,10 +157,12 @@ const mockNotifications: NotificationProps[] = [
   {
     id: "3",
     type: "approval",
-    title: "Đơn xin nghỉ phép đã được phê duyệt",
-    message: "Đơn nghỉ phép ngày 25/11 của bạn đã được CHT phê duyệt.",
+    title: "Yêu cầu đổi ca được gửi",
+    message: "Yêu cầu đổi ca cho Ca Chiều đã được gửi đến quản lý.",
     time: "2 giờ trước",
     isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "RQ-SWAP-05",
   },
   {
     id: "4",
@@ -158,16 +185,41 @@ const mockNotifications: NotificationProps[] = [
     type: "approval",
     title: "Chờ duyệt đổi ca",
     message:
-      "Nhân viên Minh Tuấn muốn đổi ca Chờ xác nhận của bạn (Thứ 6, 21/11).",
+      "Nhân viên Minh Tuấn muốn đổi ca Chờ xác nhận của bạn. Xem trong tab Xử lý.",
     time: "2 ngày trước",
     isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "RQ-SWAP-02",
   },
 ];
 
 export default function Notifications() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { briefings, markBriefingAsRead, acknowledgeBriefing } = useApp();
+  const {
+    briefings,
+    markBriefingAsRead,
+    acknowledgeBriefing,
+    availableShifts,
+    setAvailableShifts,
+    leaveRequests,
+    setLeaveRequests,
+    attendanceTickets,
+    setAttendanceTickets,
+    setBriefings,
+    qaNotificationScenario,
+    setQaNotificationScenario,
+    qaDiagnosticResult,
+    setQaDiagnosticResult,
+  } = useApp();
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
   
   const initialTab = searchParams.get("tab") as NotificationType | "all" | null;
   const [activeTab, setActiveTab] = useState<"all" | NotificationType>(initialTab && ["all", "system", "task", "approval", "briefing"].includes(initialTab) ? initialTab : "all");
@@ -185,6 +237,499 @@ export default function Notifications() {
     }
   }, [selectedBriefingId]);
 
+  const handleApplyScenario = (scenario: QaScenario) => {
+    setSearchParams({});
+    setSelectedBriefingId(null);
+    setQaNotificationScenario(scenario);
+    setQaDiagnosticResult(null);
+
+    switch (scenario.id) {
+      case "QA-01": {
+        setAttendanceTickets((prev) => prev.filter((t) => t.id !== "TK-OUT-032"));
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-01",
+          type: "approval",
+          title: "Cần xử lý: Bổ sung Check-out",
+          message: "Ticket của bạn (Ca Sáng, 30/07) chưa có dữ liệu check-out. Vui lòng kiểm tra và xử lý bổ sung công.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications.filter((n) => n.id !== "app-1")]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-02": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-02",
+          type: "approval",
+          title: "Đơn nghỉ phép LR-002 đã được duyệt",
+          message: "Đơn nghỉ phép tuần trước của bạn đã được duyệt bởi Quản lý.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "LR-002",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications.filter((n) => n.id !== "lr-noti-2")]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-03": {
+        const submittedTicket: AttendanceTicket = {
+          id: "TK-OUT-032",
+          employeeId: "u1",
+          type: "forgot_out",
+          date: new Date(2026, 6, 30),
+          reason: "Đã gửi giải trình bổ sung giờ ra ca 13:45",
+          useAnnualLeaveIntent: false,
+          relatedShift: {
+            id: "shift_qa_03",
+            shiftName: "Ca Sáng",
+            timeStr: "08:00 - 15:00",
+            storeName: "HMK Nguyễn Trãi",
+            hours: 7,
+          },
+          actualTime: "13:45",
+          submittedAt: new Date(),
+          status: "PENDING",
+          resolutionPath: null,
+          linkedLeaveRequestId: null,
+          isPeriodLocked: false,
+        };
+        setAttendanceTickets((prev) => [submittedTicket, ...prev.filter((t) => t.id !== "TK-OUT-032")]);
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-03",
+          type: "approval",
+          title: "Cần xử lý: Bổ sung Check-out (Snapshot cũ)",
+          message: "[Snapshot cũ lúc gửi] Ticket cần xử lý bổ sung Check-out ca 30/07.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications.filter((n) => n.id !== "app-1")]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-04": {
+        setAttendanceTickets((prev) => prev.filter((t) => t.id !== "TK-IN-017"));
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-04",
+          type: "approval",
+          title: "Yêu cầu đã gửi (Snapshot cũ)",
+          message: "[Snapshot cũ] Yêu cầu bổ sung Check-in đã được gửi đi.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-IN-017",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications.filter((n) => n.id !== "app-2")]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-05": {
+        setAttendanceTickets((prev) => prev.filter((t) => t.id !== "TK-MISSING-999"));
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-05",
+          type: "approval",
+          title: "Cần xử lý: Ticket đã bị xóa / hủy",
+          message: "Thông báo liên quan đến yêu cầu công việc TK-MISSING-999.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-MISSING-999",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-06": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-06",
+          type: "system",
+          title: "Lịch làm việc ca mới đã được xếp!",
+          message: "Bạn có ca làm việc tại HMK Nguyễn Trãi (Ca Sáng). Vui lòng kiểm tra Lịch cá nhân.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "case_approved_today",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-07": {
+        const outsideShift: any = {
+          id: "shift_outside_week_018",
+          date: new Date(2026, 8, 18),
+          title: "Ca Tối",
+          timeStr: "15:00 - 22:00",
+          storeName: "HMK Nguyễn Trãi",
+          branchId: "br-nt",
+          skillTag: "Bán hàng",
+          status: "approved",
+          requiredRole: "Nhân viên",
+          hours: 7,
+        };
+        setAvailableShifts((prev) => [outsideShift, ...prev.filter((s) => s.id !== "shift_outside_week_018")]);
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-07",
+          type: "system",
+          title: "Phân công ca làm việc ngày 18/09",
+          message: "Bạn đã được phân công Ca Tối ngày 18/09/2026 tại HMK Nguyễn Trãi.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "shift_outside_week_018",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-08": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-08",
+          type: "system",
+          title: "Ca làm việc đã bị tước (No-show)",
+          message: "Quản lý đã Handshake thay thế nhân sự. Ca này đã bị Hủy trong Lịch làm việc.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "case_cancelled_today",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-09": {
+        const changedShift: any = {
+          id: "shift_status_changed_demo",
+          date: new Date(),
+          title: "Ca Chiều",
+          timeStr: "13:00 - 20:00",
+          storeName: "HMK Cầu Giấy",
+          branchId: "br-cg",
+          skillTag: "Bán hàng",
+          status: "cancelled",
+          cancelReason: "Quản lý điều động lại nhân sự cửa hàng",
+          requiredRole: "Nhân viên",
+          hours: 7,
+        };
+        setAvailableShifts((prev) => [changedShift, ...prev.filter((s) => s.id !== "shift_status_changed_demo")]);
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-09",
+          type: "system",
+          title: "Thông báo ca làm việc mới: Ca Chiều hôm nay",
+          message: "[Snapshot cũ lúc xếp] Bạn được xếp Ca Chiều tại HMK Cầu Giấy.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "shift_status_changed_demo",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-10": {
+        setAvailableShifts((prev) => prev.filter((s) => s.id !== "SHIFT-MISSING-999"));
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-10",
+          type: "system",
+          title: "Ca làm việc đã bị xóa khỏi hệ thống",
+          message: "Thông tin ca làm việc SHIFT-MISSING-999.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "SHIFT-MISSING-999",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-11": {
+        const shift101: any = {
+          id: "SHIFT-101",
+          date: new Date(),
+          title: "Ca Sáng",
+          timeStr: "08:00 - 15:00",
+          storeName: "HMK Nguyễn Trãi",
+          branchId: "br-nt",
+          skillTag: "Bán hàng",
+          status: "approved",
+          requiredRole: "Nhân viên",
+          hours: 7,
+        };
+        const shift102: any = {
+          id: "SHIFT-102",
+          date: new Date(),
+          title: "Ca Sáng",
+          timeStr: "08:00 - 15:00",
+          storeName: "HMK Nguyễn Trãi",
+          branchId: "br-nt",
+          skillTag: "Bán hàng",
+          status: "approved",
+          requiredRole: "Nhân viên",
+          hours: 7,
+        };
+        setAvailableShifts((prev) => [shift101, shift102, ...prev.filter((s) => s.id !== "SHIFT-101" && s.id !== "SHIFT-102")]);
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-11",
+          type: "system",
+          title: "Phân công: Ca Sáng HMK Nguyễn Trãi (SHIFT-102)",
+          message: "Kiểm tra định vị chính xác ca SHIFT-102 thay vì SHIFT-101 có cùng tên và giờ.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "SHIFT",
+          shiftId: "SHIFT-102",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-12": {
+        const urgentBriefing: any = {
+          id: "briefing_qa_12",
+          title: "Bản tin đầu ca: Ra mắt BST Kính Mát Mùa Thu",
+          message: "Chi tiết quy trình tư vấn và chính sách bảo hành mới cho BST Thu 2026. Tất cả nhân sự trong ca cần đọc kỹ.",
+          content: "Nội dung chi tiết về bộ sưu tập Kính Mát Mùa Thu 2026:\n1. Điểm nổi bật: Tròng kính phân cực chống tia UV400 chuẩn Châu Âu.\n2. Giá bán đề xuất: 550.000đ - 1.200.000đ.\n3. Quà tặng kèm: Hộp da cao cấp và khăn lau nano kháng khuẩn.",
+          senderRole: "Quản lý cửa hàng",
+          senderName: "Trần Anh Tuấn",
+          sentAt: new Date().toISOString(),
+          storeName: "HMK Nguyễn Trãi",
+          isUrgent: true,
+          isRead: false,
+          isAcknowledged: false,
+        };
+        setBriefings((prev) => [urgentBriefing, ...prev.filter((b) => b.id !== "briefing_qa_12")]);
+        setActiveTab("briefing");
+        break;
+      }
+
+      case "QA-13": {
+        const ackBriefing: any = {
+          id: "briefing_qa_13",
+          title: "Bản tin an toàn: Hướng dẫn PCCC định kỳ",
+          message: "Bản tin an toàn định kỳ đã được bạn đọc và xác nhận đầy đủ.",
+          content: "Quy chuẩn an toàn PCCC tháng 9/2026:\n- Kiểm tra lối thoát hiểm tại cửa sau.\n- Bình chữa cháy CO2 đã được kiểm định đầy đủ.",
+          senderRole: "Trưởng ca",
+          senderName: "Lê Hoàng Yến",
+          sentAt: new Date(Date.now() - 3600000).toISOString(),
+          storeName: "HMK Nguyễn Trãi",
+          isUrgent: false,
+          isRead: true,
+          isAcknowledged: true,
+          acknowledgedAt: new Date(Date.now() - 1800000).toISOString(),
+        };
+        setBriefings((prev) => [ackBriefing, ...prev.filter((b) => b.id !== "briefing_qa_13")]);
+        setActiveTab("briefing");
+        break;
+      }
+
+      case "QA-14": {
+        const unreadNoti: NotificationProps = {
+          id: "noti-qa-14-unread",
+          type: "approval",
+          title: "Thông báo A (Chưa đọc): Bổ sung Check-out",
+          message: "Thông báo chưa đọc có chấm đỏ. Thử bấm để kiểm tra điều hướng và tự động chuyển sang đã đọc.",
+          time: "1 phút trước",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        const readNoti: NotificationProps = {
+          id: "noti-qa-14-read",
+          type: "approval",
+          title: "Thông báo B (Đã đọc): Bổ sung Check-out",
+          message: "Thông báo đã đọc. Thử bấm để kiểm tra điều hướng đến cùng mục tiêu chính xác.",
+          time: "1 giờ trước",
+          isRead: true,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([unreadNoti, readNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-15": {
+        const deepTickets: AttendanceTicket[] = [];
+        for (let i = 1; i <= 9; i++) {
+          deepTickets.push({
+            id: `TK-DUMMY-${i}`,
+            employeeId: "u1",
+            type: "missing_both",
+            date: new Date(2026, 7, i),
+            reason: `Thẻ đệm danh sách số ${i}`,
+            useAnnualLeaveIntent: false,
+            relatedShift: { id: `s-d-${i}`, shiftName: `Ca Sáng ${i}`, timeStr: "08:00 - 15:00", storeName: "HMK", hours: 7 },
+            submittedAt: new Date(2026, 7, i),
+            status: "PENDING",
+            resolutionPath: null,
+            linkedLeaveRequestId: null,
+            isPeriodLocked: false,
+          });
+        }
+        deepTickets.push({
+          id: "TK-DEEP-LIST-015",
+          employeeId: "u1",
+          type: "missing_both",
+          date: new Date(2026, 7, 10),
+          reason: "Thẻ mục tiêu nằm sâu ở cuối danh sách (Thẻ thứ 10)",
+          useAnnualLeaveIntent: false,
+          relatedShift: { id: "s-deep", shiftName: "Ca Chiều", timeStr: "15:00 - 22:00", storeName: "HMK Nguyễn Trãi", hours: 7 },
+          submittedAt: new Date(2026, 7, 10),
+          status: "PENDING",
+          resolutionPath: null,
+          linkedLeaveRequestId: null,
+          isPeriodLocked: false,
+        });
+        setAttendanceTickets(deepTickets);
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-15",
+          type: "approval",
+          title: "Cần xử lý: Thẻ nằm sâu trong danh sách",
+          message: "Mục tiêu TK-DEEP-LIST-015 nằm ở vị trí thứ 10. Thử bấm để kiểm tra tính năng auto-scroll.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-DEEP-LIST-015",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-16": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-16",
+          type: "approval",
+          title: "Cần xử lý: Bổ sung Check-out (Override tab)",
+          message: "Trước đó bạn đang ở tab Đã gửi. Bấm để kiểm tra tự động chuyển tab về Xử lý và hiển thị TK-OUT-032.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-17": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-17",
+          type: "approval",
+          title: "Cần xử lý: Bổ sung Check-out (Đích đến: TK-OUT-032)",
+          message: "Có 2 ticket cùng tên 'Bổ sung Check-out' (TK-OUT-031 và TK-OUT-032). Bấm để kiểm tra chỉ highlight TK-OUT-032.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-18": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-18",
+          type: "approval",
+          title: "Thông báo lỗi định tuyến (targetEntityId = null)",
+          message: "Thông báo này có group = TICKET nhưng bị thiếu trường ticketId. Thử bấm để kiểm tra cơ chế phòng thủ.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: undefined,
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      case "QA-19": {
+        const seededNoti: NotificationProps = {
+          id: "noti-qa-19",
+          type: "approval",
+          title: "Mô phỏng mở từ Push Notification",
+          message: "Payload: group=TICKET, ticketId=TK-OUT-032. Bấm nút Test Push phía trên để kiểm tra.",
+          time: "Vừa xong",
+          isRead: false,
+          notificationGroup: "TICKET",
+          ticketId: "TK-OUT-032",
+        };
+        setLocalNotifications([seededNoti, ...mockNotifications]);
+        setActiveTab("all");
+        break;
+      }
+
+      default:
+        break;
+    }
+  };
+
+  const handleResetToDefault = () => {
+    setQaNotificationScenario(null);
+    setQaDiagnosticResult(null);
+    setLocalNotifications(mockNotifications);
+    setActiveTab("all");
+    setSelectedBriefingId(null);
+    setAttendanceTickets([
+      {
+        id: "TK-MB-301",
+        employeeId: "u1",
+        type: "missing_both",
+        date: new Date(2026, 7, 2),
+        reason: "Không có dữ liệu Check-in & Check-out trong ca làm việc.",
+        useAnnualLeaveIntent: false,
+        relatedShift: {
+          id: "s-mb-301",
+          shiftName: "Ca Sáng",
+          timeStr: "08:00 - 15:00",
+          storeName: "HMK Nguyễn Trãi",
+          hours: 7,
+        },
+        submittedAt: new Date(2026, 7, 2, 15, 30),
+        status: "PENDING",
+        resolutionPath: null,
+        linkedLeaveRequestId: null,
+        isPeriodLocked: false,
+      },
+    ]);
+  };
+
+  const handleSimulatePushTap = (scenario: QaScenario) => {
+    if (scenario.notificationGroup === "TICKET") {
+      if (!scenario.targetEntityId) {
+        setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+        return;
+      }
+      navigate(`/requests?ticketId=${scenario.targetEntityId}`);
+    } else if (scenario.notificationGroup === "SHIFT") {
+      if (!scenario.targetEntityId) {
+        setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+        return;
+      }
+      navigate(`/schedule?shiftId=${scenario.targetEntityId}`);
+    } else if (scenario.notificationGroup === "SHIFT_BRIEFING") {
+      if (scenario.targetEntityId) {
+        setSelectedBriefingId(scenario.targetEntityId);
+      }
+    }
+  };
+
   const allNotifications: NotificationProps[] = [
     ...localNotifications,
     ...briefings.map(b => ({
@@ -197,6 +742,8 @@ export default function Notifications() {
       isUrgent: b.isUrgent,
       isAcknowledged: b.isAcknowledged,
       storeName: b.storeName,
+      notificationGroup: "SHIFT_BRIEFING" as NotificationGroup,
+      briefingId: b.id,
     }))
   ];
 
@@ -307,19 +854,91 @@ export default function Notifications() {
         </div>
       </div>
 
+      {/* MOCK / QA-ONLY SCENARIO SWITCHER TEST HARNESS */}
+      <NotificationQaSwitcher
+        onApplyScenario={handleApplyScenario}
+        onResetToDefault={handleResetToDefault}
+        onSimulatePushTap={handleSimulatePushTap}
+      />
+
       <div className="flex-1 overflow-y-auto w-full bg-gray-50/50">
         {filtered.length > 0 ? (
           <div className="p-4 space-y-3">
             {filtered.map((notification) => (
               <div
                 key={notification.id}
-                onClick={() => { 
-                   handleMarkAsRead(notification.id, notification.type);
-                   if (notification.type === "briefing") {
-                      setSelectedBriefingId(notification.id);
-                   } else if(notification.navigateUrl) {
-                      navigate(notification.navigateUrl);
-                   }
+                onClick={() => {
+                  handleMarkAsRead(notification.id, notification.type);
+
+                  const group = notification.notificationGroup || (
+                    notification.type === "briefing"
+                      ? "SHIFT_BRIEFING"
+                      : notification.ticketId
+                        ? "TICKET"
+                        : notification.shiftId
+                          ? "SHIFT"
+                          : null
+                  );
+
+                  if (group === "SHIFT_BRIEFING" || notification.type === "briefing") {
+                    const targetBriefingId = notification.briefingId || notification.id;
+                    const exists = briefings.some(b => b.id === targetBriefingId);
+                    if (exists) {
+                      setSelectedBriefingId(targetBriefingId);
+                      if (qaNotificationScenario?.category === "SHIFT_BRIEFING") {
+                        setQaDiagnosticResult({
+                          scenarioId: qaNotificationScenario.id,
+                          timestamp: new Date(),
+                          status: "PASS",
+                          details: `Đã mở bản tin [${targetBriefingId}] tại chỗ trong modal Thông báo.`,
+                          locatedEntityId: targetBriefingId,
+                        });
+                      }
+                    } else {
+                      setToastMessage("Bản tin đầu ca không còn tồn tại.");
+                    }
+                    return;
+                  }
+
+                  if (group === "TICKET" || notification.ticketId) {
+                    const targetTicketId = notification.ticketId;
+                    if (!targetTicketId) {
+                      setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+                      if (qaNotificationScenario?.id === "QA-18") {
+                        setQaDiagnosticResult({
+                          scenarioId: "QA-18",
+                          timestamp: new Date(),
+                          status: "PASS",
+                          details: "Phòng thủ an toàn: targetEntityId = null không bị crash hay chuyển trang ngẫu nhiên.",
+                        });
+                      }
+                      return;
+                    }
+                    navigate(`/requests?ticketId=${targetTicketId}`);
+                    return;
+                  }
+
+                  if (group === "SHIFT" || notification.shiftId) {
+                    const targetShiftId = notification.shiftId;
+                    if (!targetShiftId) {
+                      setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+                      return;
+                    }
+                    const foundShift = availableShifts.find(s => s.id === targetShiftId);
+                    if (foundShift) {
+                      const shiftDate = foundShift.date instanceof Date 
+                        ? foundShift.date.toISOString().split("T")[0] 
+                        : String(foundShift.date);
+                      navigate(`/schedule?shiftId=${targetShiftId}&date=${shiftDate}`);
+                    } else {
+                      navigate(`/schedule?shiftId=${targetShiftId}`);
+                    }
+                    return;
+                  }
+
+                  if (notification.navigateUrl) {
+                    navigate(notification.navigateUrl);
+                  }
                 }}
                 className={cn(
                   "p-4 bg-white border-2 rounded-xl transition-all cursor-pointer active:scale-[0.98] shadow-sm relative overflow-hidden",
@@ -395,6 +1014,20 @@ export default function Notifications() {
           </div>
         )}
       </div>
+
+      {/* Floating Toast Message */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800 text-white text-xs font-semibold px-4 py-2.5 rounded-full shadow-lg border border-slate-700 pointer-events-none whitespace-nowrap"
+          >
+            {toastMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Briefing Detail Bottom Sheet */}
       <AnimatePresence>

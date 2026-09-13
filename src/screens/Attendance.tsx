@@ -21,8 +21,9 @@ import {
   X,
   AlertCircle,
   Check,
+  ArrowLeftRight,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, isSameDay } from "date-fns";
 import { vi } from "date-fns/locale";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ import {
   ShiftAttendanceSession,
   SecurityViolationType,
   AttendanceActionType,
+  CheckInResult,
 } from "@/context/AppContext";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import Toast, { ToastType } from "@/components/Toast";
@@ -89,9 +91,15 @@ export default function Attendance() {
     user,
     setHasCheckedIn,
     availableShifts,
+    setAvailableShifts,
     attendanceSessions,
+    setAttendanceSessions,
+    getActiveAttendance,
+    activeAttendance,
     recordCheckIn,
     recordCheckOut,
+    simulateAutoCheckout,
+    executeAdhocToStandardTransition,
     attendanceTickets,
     submitAttendanceTicket,
     submitSecurityTicket,
@@ -111,6 +119,15 @@ export default function Attendance() {
     { type: "in" | "out" | "exception"; note: string; time: Date; statusBadge?: string }[]
   >([]);
   const [activeShiftId, setActiveShiftId] = useState<string | null>(null);
+
+  // Single Active Attendance Guard & QA States
+  const [qaScenario, setQaScenario] = useState<string>("QA-01");
+  const [showTransitionModal, setShowTransitionModal] = useState<Shift | null>(null);
+  const [showSplitShiftModal, setShowSplitShiftModal] = useState<{
+    activeShift: ShiftAttendanceSession;
+    targetShift: Shift;
+  } | null>(null);
+  const [conflict409Data, setConflict409Data] = useState<CheckInResult | null>(null);
 
   // Toast
   const [toast, setToast] = useState<{ message: string; subMessage?: string; type: ToastType } | null>(
@@ -348,9 +365,10 @@ export default function Attendance() {
   const isSecurityValid =
     gpsStatus === "PASS" && wifiStatus === "PASS" && deviceStatus === "PASS";
 
-  // Filter approved shifts for today
+  // Filter approved shifts strictly for today
+  const todayDate = new Date();
   const todayShifts = availableShifts
-    .filter((s) => s.status === "approved" || s.requireHandshake)
+    .filter((s) => (s.status === "approved" || s.requireHandshake) && isSameDay(s.date, todayDate))
     .sort((a, b) => a.date.getTime() - b.date.getTime());
 
   const currentShift =
@@ -469,7 +487,17 @@ export default function Attendance() {
     // Record shift attendance session immediately upon Check-In punch
     const isAdhoc = isAdhocShift;
     if (currentShift) {
-      recordCheckIn(currentShift, isAdhoc);
+      const checkInRes = recordCheckIn(currentShift, isAdhoc);
+      if (!checkInRes.success) {
+        if (checkInRes.status === 409) {
+          setConflict409Data(checkInRes);
+        }
+        setToast({
+          message: checkInRes.message || "Không thể chấm công do đang có ca làm việc khác.",
+          type: "error",
+        });
+        return;
+      }
     }
 
     const punchNote = isAdhoc ? "Check-in đột xuất" : "Check-in thành công";
@@ -552,6 +580,357 @@ export default function Attendance() {
       message: "Check-out hoàn tất ca làm việc!",
       type: "success",
     });
+  };
+
+  // Reopen active shift idempotently without creating duplicate session
+  const handleResumeActiveShift = (shift: Shift) => {
+    setActiveShiftId(shift.id);
+    setShiftType(
+      shift.shiftName.includes("Tối") || shift.shiftName.includes("Đêm")
+        ? "night"
+        : "morning"
+    );
+    setAttState("working");
+    setHasCheckedIn(true);
+    setOpenChecks([true, true, true]);
+
+    const session = attendanceSessions.find(
+      (s) => s.shiftId === shift.id && !s.checkOutTime
+    );
+    if (session) {
+      setLogs((prev) => {
+        const hasIn = prev.some((l) => l.type === "in");
+        if (!hasIn) {
+          return [
+            {
+              type: "in",
+              note: session.isAdhoc ? "Check-in đột xuất" : "Check-in thành công",
+              time: session.checkInTime,
+            },
+            ...prev,
+          ];
+        }
+        return prev;
+      });
+    }
+
+    setToast({
+      message: "Tiếp tục ca làm việc hiện tại",
+      subMessage: `${shift.shiftName} (${shift.timeStr}) tại ${shift.storeName}`,
+      type: "info",
+    });
+  };
+
+  // Switch between 10 QA Scenarios for Single Active Attendance verification
+  const applyQaScenario = (scId: string) => {
+    setQaScenario(scId);
+    const today = new Date();
+
+    if (scId === "QA-01") {
+      setAttendanceSessions((prev) =>
+        prev.map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed",
+          statusBadge: "Đã hoàn tất",
+        }))
+      );
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-01 — Không có ca nào đang hoạt động",
+        subMessage: "Mọi ca làm việc hợp lệ đều sẵn sàng Check-in.",
+        type: "info",
+      });
+    } else if (scId === "QA-02") {
+      const morningShift = availableShifts.find((s) => s.id === "case_approved_today");
+      const startT = new Date(today);
+      startT.setHours(7, 58, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: morningShift?.shiftName || "Ca Sáng (08:00 - 15:00)",
+          storeName: morningShift?.storeName || "HMK Nguyễn Trãi",
+          timeStr: morningShift?.timeStr || "08:00 - 15:00",
+          hours: 7,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-02 — Ca Sáng đang trong ca",
+        subMessage: "Các ca khác hiển thị 'Đang trong ca khác' và bị vô hiệu hóa.",
+        type: "info",
+      });
+    } else if (scId === "QA-03") {
+      const startT = new Date(today);
+      startT.setHours(13, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_adhoc_active_demo",
+          shiftId: "adhoc_today_demo",
+          shiftName: "Ca Đột xuất (Tăng ca QC)",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "13:00 - 17:00",
+          hours: 4,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "pending_qc",
+          statusBadge: "Chờ QC duyệt",
+          isAdhoc: true,
+          note: "Chấm công đột xuất - Chờ QC duyệt",
+        },
+        ...prev.filter((s) => s.shiftId !== "adhoc_today_demo").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-03 — Ca Đột xuất đang làm việc",
+        subMessage: "Ca Chiều hiển thị nút 'CHUYỂN SANG CA NÀY' cho phép chuyển ca có kiểm soát.",
+        type: "info",
+      });
+    } else if (scId === "QA-04") {
+      const morningShift = availableShifts.find((s) => s.id === "case_approved_today");
+      const startT = new Date(today);
+      startT.setHours(8, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: morningShift?.shiftName || "Ca Sáng",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "08:00 - 15:00",
+          hours: 7,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-04 — Mid-shift Dispatch: Ca A đang hoạt động",
+        subMessage: "Ca Hỗ trợ B tại HMK Cầu Giấy hiển thị 'CẦN CHECK-OUT CA HIỆN TẠI'.",
+        type: "info",
+      });
+    } else if (scId === "QA-05") {
+      const startT = new Date(today);
+      startT.setHours(8, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: "Ca Gốc (Store A)",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "08:00 - 12:00",
+          hours: 4,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-05 — Kẹp ca Sandwich A → B → Return A",
+        subMessage: "Chặng 1 (Ca gốc A) đang hoạt động. Sử dụng các bước bên dưới để điều phối.",
+        type: "info",
+      });
+    } else if (scId === "QA-06") {
+      const startT = new Date(today);
+      startT.setHours(8, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: "Ca Sáng (Store A)",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "08:00 - 15:00",
+          hours: 7,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-06 — Giao thoa ca gãy (Split Shift Intersection)",
+        subMessage: "Ca Sáng chưa Check-out, Ca Chiều vào khung sớm -> Ngăn chặn Check-in chồng chéo.",
+        type: "warning",
+      });
+    } else if (scId === "QA-07") {
+      const startT = new Date(today);
+      startT.setHours(8, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: "Ca Sáng",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "08:00 - 15:00",
+          hours: 7,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-07 — Mở lại ca đang làm việc",
+        subMessage: "Bấm 'TIẾP TỤC CHẤM CÔNG' để quay lại ca mà không tạo thêm bản ghi Check-in mới.",
+        type: "info",
+      });
+    } else if (scId === "QA-08") {
+      const startT = new Date(today);
+      startT.setHours(6, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_case_approved_today_active",
+          shiftId: "case_approved_today",
+          shiftName: "Ca Sáng (Quá ngưỡng)",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "08:00 - 15:00",
+          hours: 7,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "working",
+          statusBadge: "Đang làm việc",
+        },
+        ...prev.filter((s) => s.shiftId !== "case_approved_today").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-08 — Sẵn sàng kiểm tra Auto-checkout Release",
+        subMessage: "Bấm nút 'Kích hoạt Auto-checkout Job' để xem ca được giải phóng và ca sau mở khóa.",
+        type: "info",
+      });
+    } else if (scId === "QA-09") {
+      setAttendanceSessions((prev) =>
+        prev.map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed",
+        }))
+      );
+      setActiveShiftId(null);
+      setGpsStatus("PASS");
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-09 — Thử nghiệm Check-in đồng thời (Concurrency)",
+        subMessage: "Bấm nút '⚡ Thử nghiệm 2 Check-in đồng thời' bên dưới.",
+        type: "info",
+      });
+    } else if (scId === "QA-10") {
+      const startT = new Date(today);
+      startT.setHours(13, 0, 0, 0);
+
+      setAttendanceSessions((prev) => [
+        {
+          id: "sess_adhoc_active_demo",
+          shiftId: "adhoc_today_demo",
+          shiftName: "Ca Đột xuất (Tăng ca QC)",
+          storeName: "HMK Nguyễn Trãi",
+          timeStr: "13:00 - 17:00",
+          hours: 4,
+          date: today,
+          checkInTime: startT,
+          checkOutTime: undefined,
+          status: "pending_qc",
+          statusBadge: "Chờ QC duyệt",
+          isAdhoc: true,
+        },
+        ...prev.filter((s) => s.shiftId !== "adhoc_today_demo").map((s) => ({
+          ...s,
+          checkOutTime: s.checkOutTime || new Date(),
+          status: "completed" as const,
+        })),
+      ]);
+      setActiveShiftId(null);
+      setGpsStatus("FAIL"); // GPS FAILS!
+      setWifiStatus("PASS");
+      setDeviceStatus("PASS");
+      setToast({
+        message: "QA-10 — Thất bại bảo mật khi chuyển ca đột xuất",
+        subMessage: "GPS đã bị tắt (FAIL). Thử bấm 'CHUYỂN SANG CA NÀY' để kiểm tra ca A không bị đóng.",
+        type: "warning",
+      });
+    }
   };
 
   // Handle Travel Claim Input Change
@@ -735,15 +1114,221 @@ export default function Attendance() {
             <h3 className="text-xs font-black text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-[#558BAD]" /> Bảng điều khiển kiểm thử (QA Scenarios)
             </h3>
-            <span className="text-[10px] font-bold bg-[#F0F6FA] text-[#558BAD] px-2 py-0.5 rounded-md border border-[#558BAD]/20">
-              MOB-06 & Attendance
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold bg-[#F0F6FA] text-[#558BAD] px-2 py-0.5 rounded-md border border-[#558BAD]/20">
+                Single Active Guard
+              </span>
+              <span className="text-[9px] font-black bg-amber-500 text-white px-1.5 py-0.5 rounded uppercase tracking-wider">
+                MOCK / QA ONLY
+              </span>
+            </div>
           </div>
 
+          {/* Core Rule Invariant Debug Label (Section 19) */}
+          <div className="mb-3 bg-slate-900 text-white p-2.5 rounded-xl flex items-center justify-between shadow-inner">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "w-2.5 h-2.5 rounded-full inline-block",
+                  activeAttendance ? "bg-emerald-400 animate-pulse" : "bg-slate-500"
+                )}
+              />
+              <span className="font-mono text-xs font-bold text-slate-200">
+                Active Attendance:{" "}
+                <span className={cn("font-extrabold", activeAttendance ? "text-emerald-400" : "text-slate-400")}>
+                  {activeAttendance ? 1 : 0}
+                </span>{" "}
+                — {activeAttendance ? (activeAttendance.shiftId || "IN_PROGRESS") : "Không có ca nào"}
+              </span>
+            </div>
+            {activeAttendance && (
+              <span className="text-[10px] bg-emerald-950 text-emerald-300 font-bold px-2 py-0.5 rounded border border-emerald-800">
+                {activeAttendance.storeName}
+              </span>
+            )}
+          </div>
+
+          {/* Single Active Attendance Test Scenarios (QA-01 -> QA-10) */}
+          <div className="mb-3">
+            <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block mb-1">
+              Kịch bản kiểm thử Single Active Attendance (QA-01 → QA-10)
+            </label>
+            <select
+              className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-bold rounded-xl px-3 py-2.5 outline-none focus:border-[#558BAD] focus:ring-1 focus:ring-[#558BAD]"
+              value={qaScenario}
+              onChange={(e) => applyQaScenario(e.target.value)}
+            >
+              <option value="QA-01">QA-01 — Không có ca nào đang hoạt động (Sẵn sàng Check-in)</option>
+              <option value="QA-02">QA-02 — Ca Sáng đang trong ca (Ca Chiều/Tối bị khóa)</option>
+              <option value="QA-03">QA-03 — Chuyển ca đột xuất → Ca chuẩn (Chuyển đổi có kiểm soát)</option>
+              <option value="QA-04">QA-04 — Điều động giữa ca (Ca A đang chạy, Ca B tại Store B khóa)</option>
+              <option value="QA-05">QA-05 — Kẹp ca Sandwich A → B → Return A (Duy nhất 1 chặng active)</option>
+              <option value="QA-06">QA-06 — Giao thoa ca gãy (Ca A chưa check-out, Ca B vào khung sớm)</option>
+              <option value="QA-07">QA-07 — Mở lại ca đang hoạt động (Idempotent - Không tạo trùng bản ghi)</option>
+              <option value="QA-08">QA-08 — Tự động giải phóng sau Auto-checkout (Hết ca quá 120p)</option>
+              <option value="QA-09">QA-09 — Check-in đồng thời / Double-tap (Domain Guard trả về HTTP 409)</option>
+              <option value="QA-10">QA-10 — Thất bại bảo mật khi chuyển ca đột xuất (Giữ nguyên ca A)</option>
+            </select>
+          </div>
+
+          {/* Scenario-specific Quick Action Triggers */}
+          {qaScenario === "QA-04" && (
+            <div className="mb-3 p-2.5 bg-indigo-50/60 rounded-xl border border-indigo-200 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-indigo-900 font-bold">
+                  Thao tác kiểm thử Mid-shift Dispatch:
+                </span>
+                <button
+                  onClick={() => {
+                    recordCheckOut("case_approved_today");
+                    setToast({
+                      message: "Đã Check-out Ca A tại HMK Nguyễn Trãi!",
+                      subMessage: "Ca Hỗ trợ B tại HMK Cầu Giấy hiện đã được MỞ KHÓA.",
+                      type: "success",
+                    });
+                  }}
+                  className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-xs active:scale-95"
+                >
+                  ⚡ Check-out Ca A (Mở khóa Ca B)
+                </button>
+              </div>
+            </div>
+          )}
+
+          {qaScenario === "QA-05" && (
+            <div className="mb-3 p-2.5 bg-amber-50/70 rounded-xl border border-amber-200 text-xs">
+              <span className="text-[11px] text-amber-900 font-bold block mb-1.5">
+                Quy trình kẹp ca tuần tự (Đảm bảo luôn chỉ có ≤ 1 ca active):
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                <button
+                  onClick={() => {
+                    recordCheckOut("case_approved_today");
+                    setToast({ message: "Bước 1: Check-out Ca gốc A thành công!", type: "info" });
+                  }}
+                  className="px-2 py-1 bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[10px] font-bold shadow-xs"
+                >
+                  1. Check-out A
+                </button>
+                <button
+                  onClick={() => {
+                    const sb = availableShifts.find((s) => s.isSupportShift) || availableShifts[0];
+                    recordCheckIn(sb);
+                    setToast({ message: "Bước 2: Check-in Ca hỗ trợ B!", type: "info" });
+                  }}
+                  className="px-2 py-1 bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[10px] font-bold shadow-xs"
+                >
+                  2. Check-in B
+                </button>
+                <button
+                  onClick={() => {
+                    const sb = availableShifts.find((s) => s.isSupportShift);
+                    if (sb) recordCheckOut(sb.id);
+                    setToast({ message: "Bước 3: Check-out Ca hỗ trợ B!", type: "info" });
+                  }}
+                  className="px-2 py-1 bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[10px] font-bold shadow-xs"
+                >
+                  3. Check-out B
+                </button>
+                <button
+                  onClick={() => {
+                    const sr = availableShifts.find((s) => s.isReturnShift) || availableShifts[0];
+                    recordCheckIn(sr);
+                    setToast({ message: "Bước 4: Check-in Ca quay lại A!", type: "info" });
+                  }}
+                  className="px-2 py-1 bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[10px] font-bold shadow-xs"
+                >
+                  4. Check-in Return A
+                </button>
+              </div>
+            </div>
+          )}
+
+          {qaScenario === "QA-08" && (
+            <div className="mb-3 p-2.5 bg-blue-50/60 rounded-xl border border-blue-200 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-blue-900 font-bold">
+                  Kiểm thử Auto-checkout Job:
+                </span>
+                <button
+                  onClick={() => {
+                    const res = simulateAutoCheckout("case_approved_today");
+                    if (res) {
+                      setToast({
+                        message: "Auto-checkout hoàn tất: Ca Sáng tự động đóng!",
+                        subMessage: "Ca Chiều đã được giải phóng khỏi trạng thái chặn.",
+                        type: "success",
+                      });
+                    }
+                  }}
+                  className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold shadow-xs active:scale-95"
+                >
+                  ⏰ Kích hoạt Auto-checkout Job
+                </button>
+              </div>
+            </div>
+          )}
+
+          {qaScenario === "QA-09" && (
+            <div className="mb-3 p-2.5 bg-rose-50/70 rounded-xl border border-rose-200 text-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-rose-900 font-bold block">
+                    Mô phỏng Concurrency (Hai Check-in đồng thời):
+                  </span>
+                  <span className="text-[10px] text-rose-600">
+                    Gửi song song 2 request Check-in cho 2 ca khác nhau.
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    const shiftB = availableShifts.find((s) => s.id === "case_swap_test_today") || availableShifts[1];
+                    const shiftC = availableShifts.find((s) => s.id === "case_approved_cg_today") || availableShifts[2];
+                    if (!shiftB || !shiftC) return;
+
+                    // Reset first
+                    setAttendanceSessions((prev) =>
+                      prev.map((s) => ({
+                        ...s,
+                        checkOutTime: s.checkOutTime || new Date(),
+                        status: "completed" as const,
+                      }))
+                    );
+
+                    // Call 1: Shift B
+                    recordCheckIn(shiftB);
+                    // Call 2: Shift C immediately (Domain guard catches active attendance)
+                    const resC = recordCheckIn(shiftC);
+
+                    if (!resC.success && resC.status === 409) {
+                      setConflict409Data(resC);
+                      setToast({
+                        message: "Domain Guard kích hoạt thành công: Trả về HTTP 409!",
+                        type: "warning",
+                      });
+                    }
+                  }}
+                  className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[11px] font-bold shadow-xs active:scale-95 shrink-0 ml-2"
+                >
+                  ⚡ Bấm đồng thời 2 Ca
+                </button>
+              </div>
+            </div>
+          )}
+
+          {qaScenario === "QA-10" && (
+            <div className="mb-3 p-2 bg-amber-50/80 rounded-xl border border-amber-200 text-xs text-amber-800">
+              <p className="font-semibold text-[11px]">
+                ⚠️ Lưu ý: GPS hiện đang ở trạng thái <span className="text-red-600 font-bold">FAIL</span>. Bấm nút "CHUYỂN SANG CA NÀY" ở Ca Chiều bên dưới để kiểm chứng việc bảo mật ngăn chặn chuyển ca và giữ nguyên ca đột xuất.
+              </p>
+            </div>
+          )}
+
+          {/* Original Security & Shift Simulator */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
             <div>
               <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                Kịch bản Chấm công
+                Kịch bản Chấm công chi tiết
               </label>
               <select
                 className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs font-semibold rounded-xl px-3 py-2.5 outline-none focus:border-[#558BAD] focus:ring-1 focus:ring-[#558BAD]"
@@ -874,9 +1459,17 @@ export default function Attendance() {
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-900 leading-tight">
                   Điều kiện chấm công
                 </h4>
-                <p className="text-[10px] text-slate-400 font-medium">
-                  Xác thực 3 lớp độc lập
-                </p>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <MapPin className="w-3 h-3 text-[#558BAD] shrink-0" />
+                  <span className="text-[11px] font-bold text-[#558BAD]">
+                    {currentShift?.storeName || user?.mainBranch || "Chi nhánh hiện tại"}
+                  </span>
+                  {currentShift?.isSupportShift && (
+                    <span className="text-[9px] font-black bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded uppercase tracking-wider">
+                      HỖ TRỢ
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1388,12 +1981,30 @@ export default function Attendance() {
               {/* Card Header */}
               <div className="p-5 border-b border-slate-100 flex items-center justify-between">
                 <div>
-                  <h2 className="font-black text-slate-900 text-base tracking-tight">
-                    {currentShift?.shiftName || "Ca Sáng"} - {currentShift?.storeName || "HMK Nguyễn Trãi"}
-                  </h2>
-                  <div className="flex items-center gap-1 text-xs text-slate-400 font-bold mt-1">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>{currentShift?.timeStr || "08:00 - 15:00"}</span>
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-black text-slate-900 text-base tracking-tight">
+                      {currentShift?.shiftName || "Ca Sáng"}
+                    </h2>
+                    {currentShift?.isSupportShift && (
+                      <span className="text-[9px] font-black bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider border border-indigo-200">
+                        HỖ TRỢ
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-bold mt-1">
+                    <span className="flex items-center gap-1 text-[#558BAD]">
+                      <MapPin className="w-3.5 h-3.5 shrink-0" />
+                      {currentShift?.storeName || "HMK Nguyễn Trãi"}
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span className="flex items-center gap-1 text-slate-600">
+                      <Clock className="w-3.5 h-3.5 shrink-0" />
+                      {currentShift?.timeStr || "08:00 - 15:00"}
+                    </span>
+                    <span className="text-slate-300">•</span>
+                    <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[11px]">
+                      Vị trí: {currentShift?.assignedSkillTagId || currentShift?.requestedSkillTagId || currentShift?.skillTag || "Tư vấn"}
+                    </span>
                   </div>
                 </div>
 
@@ -1887,14 +2498,35 @@ export default function Attendance() {
 
               <div className="space-y-3">
                 {todayShifts.map((shift) => {
-                  const isCurrentActive = activeShiftId === shift.id;
+                  const isCurrentActive = activeAttendance?.shiftId === shift.id;
+                  const isAdhocTransitionEligible =
+                    Boolean(activeAttendance?.isAdhoc) &&
+                    !shift.isAdhoc &&
+                    !shift.id.startsWith("adhoc_");
+                  const isSupportBlocked =
+                    Boolean(activeAttendance) && shift.isSupportShift && !isCurrentActive;
+                  const isSplitIntersection =
+                    Boolean(activeAttendance) &&
+                    !isCurrentActive &&
+                    (qaScenario === "QA-06" ||
+                      (shift.shiftName.includes("Chiều") &&
+                        Boolean(activeAttendance?.shiftName.includes("Sáng"))));
+                  const isBlockedByActive =
+                    Boolean(activeAttendance) &&
+                    !isCurrentActive &&
+                    !isAdhocTransitionEligible;
+
                   return (
                     <div
                       key={shift.id}
                       className={cn(
                         "p-4 rounded-2xl border transition-all relative overflow-hidden bg-white shadow-card",
                         isCurrentActive
-                          ? "border-[#558BAD] ring-2 ring-[#558BAD]/10"
+                          ? "border-emerald-500 ring-2 ring-emerald-500/15"
+                          : isAdhocTransitionEligible
+                          ? "border-amber-400 bg-amber-50/15 ring-2 ring-amber-400/10"
+                          : isBlockedByActive
+                          ? "border-slate-200 bg-slate-50/40 opacity-85"
                           : shift.isReturnShift
                           ? "border-amber-200 bg-amber-50/20"
                           : shift.isSupportShift
@@ -1904,11 +2536,51 @@ export default function Attendance() {
                     >
                       <div className="flex justify-between items-start mb-3">
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="font-display text-xl font-black text-slate-900">
                               {shift.timeStr}
                             </span>
-                            {shift.isSupportShift && (
+
+                            {/* Attendance State Badges */}
+                            {isCurrentActive && (
+                              <span className="inline-flex items-center gap-1.5 text-[10px] font-black bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full border border-emerald-300">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                Đang trong ca
+                              </span>
+                            )}
+
+                            {isAdhocTransitionEligible && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black bg-amber-50 text-amber-700 px-2.5 py-0.5 rounded-full border border-amber-300">
+                                <ArrowLeftRight className="w-3 h-3 text-amber-600" />
+                                Chuyển tiếp từ ca đột xuất
+                              </span>
+                            )}
+
+                            {isSupportBlocked && !isAdhocTransitionEligible && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full border border-indigo-200">
+                                <Lock className="w-3 h-3 text-indigo-500" />
+                                Cần Check-out ca trước
+                              </span>
+                            )}
+
+                            {isSplitIntersection && !isSupportBlocked && !isAdhocTransitionEligible && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black bg-orange-50 text-orange-700 px-2.5 py-0.5 rounded-full border border-orange-300">
+                                <AlertTriangle className="w-3 h-3 text-orange-600" />
+                                Giao thoa ca gãy
+                              </span>
+                            )}
+
+                            {isBlockedByActive &&
+                              !isSupportBlocked &&
+                              !isSplitIntersection &&
+                              !isAdhocTransitionEligible && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-black bg-slate-100 text-slate-500 px-2.5 py-0.5 rounded-full border border-slate-200">
+                                  <Lock className="w-3 h-3 text-slate-400" />
+                                  Đang trong ca khác
+                                </span>
+                              )}
+
+                            {shift.isSupportShift && !isSupportBlocked && (
                               <span className="text-[9px] font-black bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded uppercase tracking-wider border border-indigo-200">
                                 HỖ TRỢ
                               </span>
@@ -1918,39 +2590,129 @@ export default function Attendance() {
                                 CA QUAY LẠI
                               </span>
                             )}
-                            {isCurrentActive && (
-                              <span className="text-[9px] font-black bg-[#F0F6FA] text-[#558BAD] px-2 py-0.5 rounded uppercase tracking-wider border border-[#558BAD]/20">
-                                ĐANG CHỌN
-                              </span>
-                            )}
                           </div>
-                          <p className="text-xs font-bold text-slate-600 mt-0.5">
-                            {shift.shiftName} · {shift.storeName}
-                          </p>
+
+                          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-600 mt-1.5">
+                            <span className="flex items-center gap-1 text-[#558BAD] font-bold">
+                              <MapPin className="w-3 h-3 shrink-0" />
+                              {shift.storeName}
+                            </span>
+                            <span className="text-slate-300">•</span>
+                            <span>{shift.shiftName}</span>
+                            <span className="text-slate-300">•</span>
+                            <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[11px] font-bold">
+                              Vị trí: {shift.assignedSkillTagId || shift.requestedSkillTagId || shift.skillTag}
+                            </span>
+                          </div>
                         </div>
 
-                        <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-md">
+                        <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-md shrink-0">
                           {shift.hours} giờ
                         </span>
                       </div>
 
-                      <button
-                        onClick={() => {
-                          setActiveShiftId(shift.id);
-                          setShiftType(
-                            shift.shiftName.includes("Tối") || shift.shiftName.includes("Đêm")
-                              ? "night"
-                              : "morning"
-                          );
-                          setOpenChecks([false, false, false]);
-                          setCloseChecks([false, false, false]);
-                          setAttState("pending_in");
-                        }}
-                        className="w-full bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-md shadow-[#558BAD]/20 uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-98"
-                      >
-                        <span>Vào chấm công ca này</span>
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
+                      {/* Action CTAs according to Single Active Attendance Guard */}
+                      {isCurrentActive ? (
+                        <div>
+                          <button
+                            onClick={() => handleResumeActiveShift(shift)}
+                            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20 active:scale-98 transition-all"
+                          >
+                            <span>Tiếp tục chấm công</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                          <p className="text-[10px] text-emerald-700 font-medium mt-1.5 text-center">
+                            Ca làm việc này đang hoạt động. Bấm để quay lại phiên chấm công.
+                          </p>
+                        </div>
+                      ) : isAdhocTransitionEligible ? (
+                        <div>
+                          <button
+                            onClick={() => setShowTransitionModal(shift)}
+                            className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20 active:scale-98 transition-all"
+                          >
+                            <ArrowLeftRight className="w-3.5 h-3.5" />
+                            <span>Chuyển sang ca này</span>
+                          </button>
+                          <p className="text-[11px] text-amber-700 font-medium mt-1.5 bg-amber-50/70 p-2 rounded-lg border border-amber-200/60">
+                            Cho phép tự động kết thúc ca đột xuất và chuyển sang ca làm việc chuẩn.
+                          </p>
+                        </div>
+                      ) : isSupportBlocked ? (
+                        <div>
+                          <button
+                            disabled
+                            className="w-full bg-slate-100 text-slate-400 font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider cursor-not-allowed border border-slate-200 flex items-center justify-center gap-1.5"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Cần Check-out ca hiện tại</span>
+                          </button>
+                          <p className="text-[11px] text-slate-500 font-medium mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-200/60">
+                            Bạn cần hoàn tất Check-out tại{" "}
+                            <span className="font-bold text-slate-700">{activeAttendance?.storeName}</span> trước
+                            khi Check-in ca hỗ trợ tại{" "}
+                            <span className="font-bold text-slate-700">{shift.storeName}</span>.
+                          </p>
+                        </div>
+                      ) : isSplitIntersection ? (
+                        <div>
+                          <button
+                            onClick={() =>
+                              activeAttendance &&
+                              setShowSplitShiftModal({
+                                activeShift: activeAttendance,
+                                targetShift: shift,
+                              })
+                            }
+                            className="w-full bg-orange-50 hover:bg-orange-100 text-orange-800 border border-orange-300 font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-98 transition-all"
+                          >
+                            <span>Hoàn tất ca trước để vào ca</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                          <p className="text-[11px] text-orange-700 font-medium mt-1.5 bg-orange-50/70 p-2 rounded-lg border border-orange-200/60">
+                            Bạn đang chấm công{" "}
+                            <span className="font-bold">
+                              {activeAttendance?.shiftName} ({activeAttendance?.timeStr})
+                            </span>
+                            . Cần Check-out ca trước để bắt đầu ca mới.
+                          </p>
+                        </div>
+                      ) : isBlockedByActive ? (
+                        <div>
+                          <button
+                            disabled
+                            className="w-full bg-slate-100 text-slate-400 font-bold py-2.5 rounded-xl text-xs uppercase tracking-wider cursor-not-allowed border border-slate-200 flex items-center justify-center gap-1.5"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Đang trong ca khác</span>
+                          </button>
+                          <p className="text-[11px] text-slate-500 font-medium mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-200/60">
+                            Bạn đang chấm công{" "}
+                            <span className="font-bold text-slate-700">
+                              {activeAttendance?.shiftName} ({activeAttendance?.timeStr})
+                            </span>
+                            . Vui lòng hoàn tất ca hiện tại trước khi vào ca khác.
+                          </p>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setActiveShiftId(shift.id);
+                            setShiftType(
+                              shift.shiftName.includes("Tối") || shift.shiftName.includes("Đêm")
+                                ? "night"
+                                : "morning"
+                            );
+                            setOpenChecks([false, false, false]);
+                            setCloseChecks([false, false, false]);
+                            setAttState("pending_in");
+                          }}
+                          className="w-full bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-md shadow-[#558BAD]/20 uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-98"
+                        >
+                          <span>Vào chấm công ca này</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -1987,12 +2749,29 @@ export default function Attendance() {
                   </div>
                 </div>
 
-                <button
-                  onClick={() => setShowAdhocModal(true)}
-                  className="w-full bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs transition-all flex items-center justify-center gap-2 shadow-xs active:scale-98"
-                >
-                  <span className="text-[#558BAD] font-black">+</span> Khai báo & Chấm công ca đột xuất
-                </button>
+                {activeAttendance ? (
+                  <div className="space-y-2.5">
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 font-medium flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                      <span>
+                        Bạn đang trong ca <strong className="text-slate-800">{activeAttendance.shiftName}</strong> ({activeAttendance.timeStr}). Cần hoàn tất ca hiện tại trước khi bắt đầu ca đột xuất.
+                      </span>
+                    </div>
+                    <button
+                      disabled
+                      className="w-full bg-slate-100 text-slate-400 font-bold py-2.5 rounded-xl text-xs cursor-not-allowed border border-slate-200 flex items-center justify-center gap-2"
+                    >
+                      <Lock className="w-3.5 h-3.5" /> Khai báo & Chấm công ca đột xuất (Đang trong ca khác)
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowAdhocModal(true)}
+                    className="w-full bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs transition-all flex items-center justify-center gap-2 shadow-xs active:scale-98"
+                  >
+                    <span className="text-[#558BAD] font-black">+</span> Khai báo & Chấm công ca đột xuất
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2597,6 +3376,255 @@ export default function Attendance() {
                 >
                   Vào ca ngay
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+        {/* ==================================================== */}
+        {/* MODAL: TRANSITION FROM AD-HOC TO STANDARD SHIFT */}
+        {/* ==================================================== */}
+        {showTransitionModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4 border border-amber-200">
+                <ArrowLeftRight className="w-6 h-6" />
+              </div>
+
+              <h3 className="font-display text-lg font-black text-slate-900 mb-1">
+                Chuyển sang ca làm việc chuẩn?
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mb-4 leading-relaxed">
+                Phiên chấm công ca đột xuất hiện tại sẽ được <strong>kết thúc tự động</strong> trước khi hệ thống kích hoạt ca làm việc chuẩn này.
+              </p>
+
+              {/* Source & Target Shift Info */}
+              <div className="space-y-2 mb-4 bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <span className="text-slate-400 font-bold text-[10px] uppercase">Ca hiện tại:</span>
+                  <span className="font-bold text-slate-800">
+                    {activeAttendance?.shiftName} (Đột xuất)
+                  </span>
+                </div>
+                <div className="flex items-center justify-between pt-0.5">
+                  <span className="text-slate-400 font-bold text-[10px] uppercase">Ca chuyển đến:</span>
+                  <span className="font-bold text-[#558BAD]">
+                    {showTransitionModal.shiftName} ({showTransitionModal.timeStr})
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200/80 mb-5 text-[11px] text-amber-900 font-medium leading-relaxed">
+                <strong>Quy tắc hệ thống:</strong> Đảm bảo nhân viên chỉ có duy nhất 1 ca ở trạng thái IN_PROGRESS tại một thời điểm.
+              </div>
+
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setShowTransitionModal(null)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={() => {
+                    const targetShift = showTransitionModal;
+                    setShowTransitionModal(null);
+
+                    // Validate target shift security first (QA-10 guard)
+                    if (gpsStatus !== "PASS" || wifiStatus !== "PASS" || deviceStatus !== "PASS") {
+                      setToast({
+                        message: "Bảo mật không đạt: Không thể chuyển ca!",
+                        subMessage: "Ca đột xuất hiện tại được giữ nguyên, không bị đóng.",
+                        type: "error",
+                      });
+                      return;
+                    }
+
+                    // Execute controlled atomic transition
+                    const res = executeAdhocToStandardTransition(targetShift);
+                    if (res.success) {
+                      setActiveShiftId(targetShift.id);
+                      setShiftType(
+                        targetShift.shiftName.includes("Tối") || targetShift.shiftName.includes("Đêm")
+                          ? "night"
+                          : "morning"
+                      );
+                      setOpenChecks([false, false, false]);
+                      setCloseChecks([false, false, false]);
+                      setAttState("pending_in");
+                      setToast({
+                        message: "Chuyển ca thành công!",
+                        subMessage: `Ca đột xuất đã kết thúc. Đang vào ca ${targetShift.shiftName}.`,
+                        type: "success",
+                      });
+                    }
+                  }}
+                  className="flex-[2] py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-amber-500/20 active:scale-95"
+                >
+                  Xác nhận chuyển ca
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* MODAL: SPLIT-SHIFT INTERSECTION */}
+        {/* ==================================================== */}
+        {showSplitShiftModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center mb-4 border border-orange-200">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+
+              <h3 className="font-display text-lg font-black text-slate-900 mb-1">
+                Giao thoa ca làm việc (Split-shift)
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mb-4 leading-relaxed">
+                Ca mới <strong>{showSplitShiftModal.targetShift.shiftName}</strong> đã đến khung Check-in sớm, nhưng bạn vẫn chưa hoàn tất Check-out ca <strong>{showSplitShiftModal.activeShift.shiftName}</strong>.
+              </p>
+
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-600 mb-4 space-y-1">
+                <p className="font-bold text-slate-800">Cần thực hiện:</p>
+                <p>1. Check-out ca trước ({showSplitShiftModal.activeShift.shiftName})</p>
+                <p>2. Quay lại Check-in ca tiếp theo</p>
+              </div>
+
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setShowSplitShiftModal(null)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
+                >
+                  Để sau
+                </button>
+                <button
+                  onClick={() => {
+                    const activeSession = showSplitShiftModal.activeShift;
+                    setShowSplitShiftModal(null);
+                    handleResumeActiveShift({
+                      id: activeSession.shiftId,
+                      shiftName: activeSession.shiftName,
+                      timeStr: activeSession.timeStr,
+                      storeName: activeSession.storeName,
+                      date: new Date(),
+                      status: "approved",
+                      hours: 7,
+                    } as Shift);
+                  }}
+                  className="flex-[2] py-3 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-orange-600/20 active:scale-95"
+                >
+                  Check-out ca trước ngay
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* ==================================================== */}
+        {/* MODAL: DOMAIN GUARD CONFLICT 409 */}
+        {/* ==================================================== */}
+        {conflict409Data && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4 border border-rose-200">
+                <Lock className="w-6 h-6" />
+              </div>
+
+              <div className="flex items-center gap-2 mb-1">
+                <h3 className="font-display text-lg font-black text-slate-900">
+                  Xung đột phiên chấm công
+                </h3>
+                <span className="text-[10px] font-mono font-bold bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">
+                  HTTP 409
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-medium mb-4 leading-relaxed">
+                Hệ thống chỉ cho phép <strong>tối đa 1 ca</strong> ở trạng thái <code className="text-rose-600 font-bold bg-rose-50 px-1 rounded">IN_PROGRESS</code> tại một thời điểm.
+              </p>
+
+              {conflict409Data.activeContext && (
+                <div className="mb-4 bg-rose-50/60 p-3.5 rounded-2xl border border-rose-200/80 text-xs space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-rose-700 font-bold">Ca đang hoạt động:</span>
+                    <span className="font-extrabold text-slate-800">
+                      {conflict409Data.activeContext.shiftName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-slate-600">
+                    <span>Chi nhánh:</span>
+                    <span className="font-semibold">{conflict409Data.activeContext.storeName}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-slate-600">
+                    <span>Thời gian vào ca:</span>
+                    <span className="font-mono font-semibold">
+                      {new Date(conflict409Data.activeContext.checkInTime).toLocaleTimeString("vi-VN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setConflict409Data(null)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-colors"
+                >
+                  Đóng
+                </button>
+                {conflict409Data.activeContext && (
+                  <button
+                    onClick={() => {
+                      const ctx = conflict409Data.activeContext;
+                      setConflict409Data(null);
+                      if (ctx) {
+                        handleResumeActiveShift({
+                          id: ctx.shiftId,
+                          shiftName: ctx.shiftName,
+                          timeStr: ctx.timeStr,
+                          storeName: ctx.storeName,
+                          date: new Date(),
+                          status: "approved",
+                          hours: 7,
+                        } as Shift);
+                      }
+                    }}
+                    className="flex-[2] py-3 bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md shadow-[#558BAD]/20 active:scale-95"
+                  >
+                    Đến ca đang chạy
+                  </button>
+                )}
               </div>
             </motion.div>
           </motion.div>

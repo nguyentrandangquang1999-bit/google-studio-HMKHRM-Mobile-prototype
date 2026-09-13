@@ -1,6 +1,7 @@
 import React from "react";
 import ScreenHeader from "@/components/ScreenHeader";
 import { useApp } from "@/context/AppContext";
+import { cn } from "@/lib/utils";
 import {
   Mail,
   Phone,
@@ -14,6 +15,8 @@ import {
   Store,
   PhoneCall,
   ShieldCheck,
+  Building2,
+  CheckCircle2,
 } from "lucide-react";
 
 export default function Profile() {
@@ -120,6 +123,63 @@ export default function Profile() {
               </div>
             </div>
 
+            {/* Chi nhánh làm việc phụ */}
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
+              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
+                <Building2 className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                  Chi nhánh làm việc phụ
+                </p>
+                {(() => {
+                  const secondaryBranches = user?.workingBranches?.filter((b) => !b.isHome) || [
+                    { branchId: "br-cg", branchName: "HMK Cầu Giấy", status: "ACTIVE" as const, isHome: false }
+                  ];
+
+                  if (secondaryBranches.length === 0) {
+                    return (
+                      <p className="text-xs text-slate-400 italic">
+                        Không có
+                      </p>
+                    );
+                  }
+
+                  return (
+                    <div className="flex flex-wrap gap-1.5 mt-0.5">
+                      {secondaryBranches.map((branch, idx) => (
+                        <div
+                          key={branch.branchId || idx}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-white border border-slate-200 rounded-lg shadow-2xs"
+                        >
+                          <span className="text-xs font-bold text-slate-800">
+                            {branch.branchName}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-[10px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider flex items-center gap-1",
+                              branch.status === "ACTIVE"
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
+                                : "bg-slate-100 text-slate-500 border border-slate-200"
+                            )}
+                          >
+                            {branch.status === "ACTIVE" ? (
+                              <>
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                Hiệu lực
+                              </>
+                            ) : (
+                              "Ngừng"
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
             {/* Số điện thoại chi nhánh */}
             <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
               <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
@@ -135,21 +195,6 @@ export default function Profile() {
               </div>
             </div>
 
-            {/* Ngày vào làm */}
-            <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
-              <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
-                <Calendar className="w-4 h-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">
-                  Ngày vào làm
-                </p>
-                <p className="text-sm font-bold text-slate-900 truncate">
-                  {user?.joinDate || "15/04/2023"}
-                </p>
-              </div>
-            </div>
-
             {/* Chi nhánh được phân quyền */}
             <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50/70 border border-slate-100">
               <div className="w-9 h-9 rounded-xl bg-white border border-slate-200/80 flex items-center justify-center shrink-0 text-[#558BAD] shadow-xs mt-0.5">
@@ -160,7 +205,7 @@ export default function Profile() {
                   Chi nhánh được phân quyền
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {(user?.authorizedBranches || ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Thủ Đức"]).map((branch, idx) => (
+                  {(user?.authorizedBranches || ["HMK Nguyễn Trãi", "HMK Cầu Giấy"]).map((branch, idx) => (
                     <span
                       key={idx}
                       className="px-2 py-0.5 bg-white border border-[#558BAD]/30 text-[#558BAD] text-xs font-bold rounded-md shadow-2xs"

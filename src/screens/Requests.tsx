@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useState, useEffect, useRef } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import ScreenHeader from "@/components/ScreenHeader";
 import { useApp, LeaveRequestType, AttendanceTicket } from "@/context/AppContext";
 import { format } from "date-fns";
@@ -169,9 +169,13 @@ export default function Requests() {
     createBackdatedLeaveFromMissingBoth,
     commitAttendanceCorrection,
     togglePeriodLockForTicket,
+    qaNotificationScenario,
+    setQaDiagnosticResult,
   } = useApp();
   
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [highlightedTicketId, setHighlightedTicketId] = useState<string | null>(null);
   const [receivedRevs, setReceivedRevs] = useState(mockReceivedRequests);
   const [sentRevs, setSentRevs] = useState(mockSentRequests);
   const [isLeaveBalanceCollapsed, setIsLeaveBalanceCollapsed] = useState(false);
@@ -795,12 +799,14 @@ export default function Requests() {
       };
     });
 
+  const combinedReceivedRequests = [
+    ...actionableMissingBothTickets,
+    ...receivedRevs.filter((r) => r.type !== "missing_both"),
+  ];
+
   const currentList = activeTab === "sent" 
     ? combinedSentRequests 
-    : [
-        ...actionableMissingBothTickets,
-        ...receivedRevs.filter((r) => r.type !== "missing_both"),
-      ];
+    : combinedReceivedRequests;
 
   const [filterType, setFilterType] = useState<string>("all");
   const filteredList = currentList.filter((req) => {
@@ -813,6 +819,121 @@ export default function Requests() {
     if (filterType === "attendance") return req.type === "attendance_ticket" || req.type === "missing_both" || req.type === "forgot_in" || req.type === "forgot_out";
     return req.type === filterType;
   });
+
+  const combinedReceivedRequestsRef = useRef(combinedReceivedRequests);
+  combinedReceivedRequestsRef.current = combinedReceivedRequests;
+
+  const combinedSentRequestsRef = useRef(combinedSentRequests);
+  combinedSentRequestsRef.current = combinedSentRequests;
+
+  const handledTicketIdRef = useRef<string | null>(null);
+  const handledTabRef = useRef<string | null>(null);
+
+  const ticketIdParam = searchParams.get("ticketId");
+  const tabParam = searchParams.get("tab") as RequestTab | null;
+
+  // Handle Contextual Navigation from Notifications
+  useEffect(() => {
+    if (ticketIdParam) {
+      if (handledTicketIdRef.current === ticketIdParam) {
+        return;
+      }
+      handledTicketIdRef.current = ticketIdParam;
+
+      const inReceived = combinedReceivedRequestsRef.current.find(r => r.id === ticketIdParam);
+      const inSent = combinedSentRequestsRef.current.find(r => r.id === ticketIdParam);
+
+      if (!inReceived && !inSent) {
+        setToast({
+          message: "Yêu cầu này không còn khả dụng hoặc đã được cập nhật.",
+          type: "info"
+        });
+        if (qaNotificationScenario?.id === "QA-05") {
+          setQaDiagnosticResult({
+            scenarioId: "QA-05",
+            timestamp: new Date(),
+            status: "PASS",
+            details: "Xác minh an toàn: Mục tiêu TK-MISSING-999 không tồn tại, không highlight thẻ lạ, hiển thị thông báo non-blocking.",
+            currentTab: "Yêu cầu",
+          });
+        }
+        return;
+      }
+
+      if (inReceived) {
+        // Route to received tab
+        setActiveTab("received");
+        setFilterType("all");
+        setHighlightedTicketId(ticketIdParam);
+
+        // Scroll to card and highlight
+        setTimeout(() => {
+          const el = document.getElementById(`ticket-card-${ticketIdParam}`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, 200);
+
+        // Clear highlight after 1.8s (approx 2 pulses, 1.5 - 2 seconds)
+        const timer = setTimeout(() => {
+          setHighlightedTicketId(null);
+        }, 1800);
+
+        if (qaNotificationScenario) {
+          setQaDiagnosticResult({
+            scenarioId: qaNotificationScenario.id,
+            timestamp: new Date(),
+            status: qaNotificationScenario.expectedDestination.includes("Xử lý") ? "PASS" : "FAIL",
+            details: `Đã chuyển đúng tab 'Xử lý', định vị thẻ [${ticketIdParam}] và kích hoạt highlight 1.8s (Không mở Detail).`,
+            locatedEntityId: ticketIdParam,
+            currentTab: "Xử lý",
+          });
+        }
+
+        return () => clearTimeout(timer);
+      } else if (inSent) {
+        // Route to sent tab
+        setActiveTab("sent");
+        setFilterType("all");
+        
+        // Open detail bottom sheet
+        setSelectedLeave(inSent);
+        setHighlightedTicketId(ticketIdParam);
+
+        setTimeout(() => {
+          const el = document.getElementById(`ticket-card-${ticketIdParam}`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, 200);
+
+        const timer = setTimeout(() => {
+          setHighlightedTicketId(null);
+        }, 1800);
+
+        if (qaNotificationScenario) {
+          setQaDiagnosticResult({
+            scenarioId: qaNotificationScenario.id,
+            timestamp: new Date(),
+            status: qaNotificationScenario.expectedDestination.includes("Đã gửi") ? "PASS" : "FAIL",
+            details: `Đã chuyển đúng tab 'Đã gửi', định vị thẻ [${ticketIdParam}] và tự động mở Detail Bottom Sheet.`,
+            locatedEntityId: ticketIdParam,
+            currentTab: "Đã gửi",
+          });
+        }
+
+        return () => clearTimeout(timer);
+      }
+    } else {
+      handledTicketIdRef.current = null;
+      if (tabParam && (tabParam === "sent" || tabParam === "received")) {
+        if (handledTabRef.current !== tabParam) {
+          handledTabRef.current = tabParam;
+          setActiveTab(tabParam);
+        }
+      }
+    }
+  }, [ticketIdParam, tabParam]);
 
   return (
     <div className="flex flex-col h-full bg-background relative pb-20">
@@ -1038,10 +1159,12 @@ export default function Requests() {
               filteredList.map((req) => (
                   <div
                   key={req.id}
+                  id={`ticket-card-${req.id}`}
                   onClick={() => (req.type === "leave" || req.type === "attendance_ticket") && setSelectedLeave(req)}
                   className={cn(
                     "bg-white border-2 rounded-2xl p-4 shadow-sm transition-all relative overflow-hidden",
                     (req.type === "leave" || req.type === "attendance_ticket") ? "cursor-pointer active:scale-[0.98] hover:border-gray-300" : "",
+                    highlightedTicketId === req.id && "locator-highlight",
                     req.type === "forgot_in" || req.type === "forgot_out"
                       ? "border-red-100 bg-red-50/10"
                       : req.type === "swap"

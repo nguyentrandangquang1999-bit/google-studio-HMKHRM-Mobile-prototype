@@ -343,18 +343,23 @@ export function getMergedAttendanceRecords(sessions: ShiftAttendanceSession[] = 
   // Check attendanceSessions for any completed session in the active context
   sessions.forEach((sess) => {
     if (sess.status === "completed" && sess.checkInTime && sess.checkOutTime) {
+      const sessDate = sess.date ? (sess.date instanceof Date ? sess.date : new Date(sess.date)) : (sess.checkInTime instanceof Date ? sess.checkInTime : new Date(sess.checkInTime));
       const inStr = format(sess.checkInTime, "HH:mm");
       const outStr = format(sess.checkOutTime, "HH:mm");
       const exists = list.some(
-        (r) =>
-          r.date.toDateString() === sess.date.toDateString() &&
-          r.shiftName === sess.shiftName &&
-          r.checkIn === inStr
+        (r) => {
+          const rDate = r.date ? (r.date instanceof Date ? r.date : new Date(r.date)) : null;
+          return (
+            rDate?.toDateString() === sessDate.toDateString() &&
+            r.shiftName === sess.shiftName &&
+            r.checkIn === inStr
+          );
+        }
       );
       if (!exists) {
         list.push({
           id: `session_${sess.id}`,
-          date: sess.date,
+          date: sessDate,
           shiftName: sess.shiftName,
           workingBranch: sess.storeName || "HMK Nguyễn Trãi",
           scheduledStartTime: sess.timeStr?.split("-")[0]?.trim() || inStr,

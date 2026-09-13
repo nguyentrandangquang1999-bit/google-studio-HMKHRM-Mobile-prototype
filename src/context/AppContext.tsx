@@ -1,4 +1,19 @@
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import React, { createContext, useContext, useState, useMemo, ReactNode } from "react";
+import { QaScenario, QaDiagnosticResult } from "@/types/qaNotification";
+
+export type WorkingBranch = {
+  branchId: string;
+  branchName: string;
+  status: "ACTIVE" | "INACTIVE";
+  isHome?: boolean;
+};
+
+export type SkillTag = {
+  skillTagId: string;
+  skillTagName: string;
+  isPrimary?: boolean;
+  status: "ACTIVE" | "INACTIVE";
+};
 
 export type User = {
   id: string;
@@ -7,18 +22,23 @@ export type User = {
   role: string;
   department: string;
   avatar: string;
-  skills: string[]; // Thêm Skill Tag
+  skills: string[]; // Backward compat list
+  skillTags?: SkillTag[]; // CR-12SEP-02: Structured multi-skill tags
   annualLeaveEligible: boolean; // Thêm cho Leave Foundation MOB-01
   phone?: string;
   email?: string;
   joinDate?: string;
+  homeBranchId?: string; // CR-12SEP-01: Home Branch ID
+  homeBranchName?: string; // CR-12SEP-01: Home Branch Name
   mainBranch?: string;
+  workingBranches?: WorkingBranch[]; // CR-12SEP-01: Working branches with eligibility status
   branchPhone?: string;
-  authorizedBranches?: string[];
+  authorizedBranches?: string[]; // Backward compat list
 };
 
 export type ShiftSlot = {
   id: string;
+  skillTagId?: string;
   skillTag: string;
   title: string;
   current: number;
@@ -89,12 +109,28 @@ export type ShiftAttendanceSession = {
   date: Date;
   checkInTime: Date;
   checkOutTime?: Date;
-  status: "working" | "completed" | "pending_qc";
+  status: "working" | "completed" | "pending_qc" | "IN_PROGRESS";
   statusBadge: string;
   isAdhoc?: boolean;
   isSupportShift?: boolean;
   isReturnShift?: boolean;
   note?: string;
+};
+
+export type CheckInResult = {
+  success: boolean;
+  status: 200 | 409;
+  errorCode?: "ACTIVE_ATTENDANCE_EXISTS";
+  message?: string;
+  activeContext?: {
+    activeAttendanceId: string;
+    activeShiftId: string;
+    activeShiftName: string;
+    activeBranch: string;
+    actualCheckInTime: Date;
+  };
+  session?: ShiftAttendanceSession;
+  resumed?: boolean;
 };
 
 export type AttendanceTicket = {
@@ -210,9 +246,14 @@ export type Shift = {
   currentStaff: number;
   maxStaff: number;
   status: ShiftStatus;
+  createdBy?: string; // Tên người xếp / tạo ca (CHT / QL / Hệ thống)
+  createdAt?: Date; // Thời gian tạo ca
   statusUpdatedAt?: Date; // Added for status update timestamp
   storeName: string;
-  skillTag: string; // Keep for legacy/marketplace matching or remove
+  branchId?: string; // CR-12SEP-01: Explicit branch identifier
+  skillTag: string; // Keep for legacy/marketplace matching or fallback
+  requestedSkillTagId?: string; // CR-12SEP-02: Explicit requested skill tag persisted upon registration
+  assignedSkillTagId?: string; // CR-12SEP-02: Actual assigned skill tag for approved shift
   slots?: ShiftSlot[]; // Detailed skill slots
   isNew?: boolean;
   isPendingSwap?: boolean;
@@ -232,6 +273,7 @@ export type Shift = {
     status: "pending" | "accepted" | "rejected";
   };
   cancelReason?: string; // e.g., "no_show_replaced"
+  allowSwap?: boolean; // Mock flag allowing swap button testing anytime
   isAdhoc?: boolean;
   adhocReason?: string;
 };
@@ -267,7 +309,7 @@ type AppContextType = {
   availableShifts: Shift[];
   registeredHours: number;
   maxHoursPerWeek: number;
-  handleShiftAction: (shiftId: string, action: "register" | "cancel") => boolean;
+  handleShiftAction: (shiftId: string, action: "register" | "cancel", requestedSkillTagId?: string) => boolean;
   acknowledgeDispatch: (shiftId: string) => void;
   addAdhocShift: (
     storeName: string,
@@ -296,8 +338,21 @@ type AppContextType = {
 
   // Attendance Records & Sessions
   attendanceSessions: ShiftAttendanceSession[];
-  recordCheckIn: (shift: Shift, isAdhoc?: boolean) => void;
-  recordCheckOut: (shiftId: string) => void;
+  setAttendanceSessions: React.Dispatch<React.SetStateAction<ShiftAttendanceSession[]>>;
+  getActiveAttendance: (employeeId?: string) => ShiftAttendanceSession | null;
+  activeAttendance: ShiftAttendanceSession | null;
+  recordCheckIn: (
+    shift: Shift,
+    isAdhoc?: boolean,
+    options?: { isApprovedTransition?: boolean }
+  ) => CheckInResult;
+  recordCheckOut: (shiftId: string, note?: string) => void;
+  simulateAutoCheckout: (shiftId?: string) => void;
+  executeAdhocToStandardTransition: (
+    standardShift: Shift,
+    preValidateSecurity: () => boolean
+  ) => { success: boolean; message: string; errorCode?: string };
+  setAvailableShifts: React.Dispatch<React.SetStateAction<Shift[]>>;
 
   // Attendance Tickets & MOB-06
   attendanceTickets: AttendanceTicket[];
@@ -344,6 +399,17 @@ type AppContextType = {
   briefings: ShiftBriefing[];
   markBriefingAsRead: (id: string) => void;
   acknowledgeBriefing: (id: string) => void;
+  setBriefings: React.Dispatch<React.SetStateAction<ShiftBriefing[]>>;
+
+  // Data Setters for QA Test Harness
+  setAttendanceTickets: React.Dispatch<React.SetStateAction<AttendanceTicket[]>>;
+  setLeaveRequests: React.Dispatch<React.SetStateAction<LeaveRequest[]>>;
+
+  // QA Notification Contextual Navigation Harness
+  qaNotificationScenario: QaScenario | null;
+  setQaNotificationScenario: (scenario: QaScenario | null) => void;
+  qaDiagnosticResult: QaDiagnosticResult | null;
+  setQaDiagnosticResult: (result: QaDiagnosticResult | null) => void;
 };
 
 const mockUser: User = {
@@ -353,14 +419,44 @@ const mockUser: User = {
   role: "Nhân viên bán hàng (NV)",
   department: "Cửa hàng HMK Nguyễn Trãi",
   avatar: "https://i.pravatar.cc/150?u=a042581f4e29026024d",
-  skills: ["Tư vấn", "Thu ngân"], // User này không có kỹ năng 'Kho'
+  homeBranchId: "br-nt",
+  homeBranchName: "HMK Nguyễn Trãi",
+  mainBranch: "HMK Nguyễn Trãi",
+  workingBranches: [
+    {
+      branchId: "br-nt",
+      branchName: "HMK Nguyễn Trãi",
+      status: "ACTIVE",
+      isHome: true,
+    },
+    {
+      branchId: "br-cg",
+      branchName: "HMK Cầu Giấy",
+      status: "ACTIVE",
+      isHome: false,
+    },
+  ],
+  skillTags: [
+    {
+      skillTagId: "sk-tuvan",
+      skillTagName: "Tư vấn",
+      isPrimary: true,
+      status: "ACTIVE",
+    },
+    {
+      skillTagId: "sk-thungan",
+      skillTagName: "Thu ngân",
+      isPrimary: false,
+      status: "ACTIVE",
+    },
+  ],
+  skills: ["Tư vấn", "Thu ngân"], // Backward compat list
+  authorizedBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy"], // Backward compat list
   annualLeaveEligible: true, // Default: eligible for Annual Leave
   phone: "0987 654 321",
   email: "my.duong@hmkoptics.com",
   joinDate: "15/04/2023",
-  mainBranch: "HMK Nguyễn Trãi",
   branchPhone: "028 7300 6886",
-  authorizedBranches: ["HMK Nguyễn Trãi", "HMK Cầu Giấy", "HMK Thủ Đức"],
 };
 
 const defaultLeavePolicy: LeavePolicy = {
@@ -457,14 +553,355 @@ const generateShifts = (): Shift[] => {
     const monday = new Date(startOfCurrentWeek);
     monday.setDate(monday.getDate() + weekOffset * 7);
 
+    // If next week (registration week), inject explicit test cases A through H covering all business rules
+    if (weekOffset === 1) {
+      const day0 = new Date(monday);
+      const day1 = new Date(monday); day1.setDate(monday.getDate() + 1);
+      const day2 = new Date(monday); day2.setDate(monday.getDate() + 2);
+      const day3 = new Date(monday); day3.setDate(monday.getDate() + 3);
+      const day4 = new Date(monday); day4.setDate(monday.getDate() + 4);
+      const day5 = new Date(monday); day5.setDate(monday.getDate() + 5);
+      const day6 = new Date(monday); day6.setDate(monday.getDate() + 6);
+
+      // Case A: HMK Nguyễn Trãi — Eligible multi-skill (Tư vấn 1/3, Thu ngân 0/2)
+      shifts.push({
+        id: "reg_case_a_nguyentrai",
+        date: day0,
+        statusUpdatedAt: new Date(day0.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Sáng (Multi-Skill)",
+        timeStr: "08:00 - 15:00",
+        hours: 7,
+        currentStaff: 1,
+        maxStaff: 5,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_a_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 1,
+            max: 3,
+          },
+          {
+            id: "slot_a_thungan",
+            skillTagId: "sk-thungan",
+            skillTag: "Thu ngân",
+            title: "Thu ngân",
+            current: 0,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case B: HMK Cầu Giấy — Eligible (Branch in active working branches + Skill Thu ngân)
+      shifts.push({
+        id: "reg_case_b_caugiay",
+        date: day1,
+        statusUpdatedAt: new Date(day1.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Chiều (Cầu Giấy)",
+        timeStr: "15:00 - 22:00",
+        hours: 7,
+        currentStaff: 1,
+        maxStaff: 2,
+        status: "open",
+        storeName: "HMK Cầu Giấy",
+        branchId: "br-cg",
+        skillTag: "Thu ngân",
+        slots: [
+          {
+            id: "slot_b_thungan",
+            skillTagId: "sk-thungan",
+            skillTag: "Thu ngân",
+            title: "Thu ngân",
+            current: 1,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case C: HMK Thủ Đức — Support Shift (Allowed across branches because isSupportShift: true)
+      shifts.push({
+        id: "reg_case_c_thuduc_support",
+        date: day2,
+        statusUpdatedAt: new Date(day2.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Tối (Hỗ trợ tăng cường)",
+        timeStr: "17:00 - 23:00",
+        hours: 6,
+        currentStaff: 0,
+        maxStaff: 2,
+        status: "open",
+        isSupportShift: true,
+        storeName: "HMK Thủ Đức",
+        branchId: "br-td",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_c_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 0,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case D: HMK Bình Thạnh — OUTSIDE working branch (isSupportShift: false) -> Ineligible
+      shifts.push({
+        id: "reg_case_d_outside_branch",
+        date: day2,
+        statusUpdatedAt: new Date(day2.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Chiều (Bình Thạnh)",
+        timeStr: "15:00 - 22:00",
+        hours: 7,
+        currentStaff: 0,
+        maxStaff: 2,
+        status: "open",
+        isSupportShift: false,
+        storeName: "HMK Bình Thạnh",
+        branchId: "br-bt",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_d_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 0,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case E: HMK Nguyễn Trãi — FULL CAPACITY (5/5 staff registered) -> Displays "Ca đã đầy" from outside
+      shifts.push({
+        id: "reg_case_e_full_capacity",
+        date: day3,
+        statusUpdatedAt: new Date(day3.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Sáng (Đã đủ người)",
+        timeStr: "08:00 - 15:00",
+        hours: 7,
+        currentStaff: 5,
+        maxStaff: 5,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_e_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 3,
+            max: 3,
+          },
+          {
+            id: "slot_e_thungan",
+            skillTagId: "sk-thungan",
+            skillTag: "Thu ngân",
+            title: "Thu ngân",
+            current: 2,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case F: HMK Nguyễn Trãi — Slots matching user skills are FULL (Tư vấn 2/2 full, Kỹ thuật 0/1 not possessed)
+      shifts.push({
+        id: "reg_case_f_skill_slots_full",
+        date: day4,
+        statusUpdatedAt: new Date(day4.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Chiều (Hết slot Tư vấn)",
+        timeStr: "15:00 - 22:00",
+        hours: 7,
+        currentStaff: 2,
+        maxStaff: 3,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_f_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 2,
+            max: 2,
+          },
+          {
+            id: "slot_f_mailap",
+            skillTagId: "sk-mailap",
+            skillTag: "Kỹ thuật mài lắp",
+            title: "Kỹ thuật mài lắp",
+            current: 0,
+            max: 1,
+          },
+        ],
+      });
+
+      // Case G: HMK Nguyễn Trãi — WRONG SKILL (User only has Tư vấn & Thu ngân)
+      shifts.push({
+        id: "reg_case_g_wrong_skill",
+        date: day5,
+        statusUpdatedAt: new Date(day5.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Tối (Khúc xạ viên)",
+        timeStr: "18:00 - 23:00",
+        hours: 5,
+        currentStaff: 0,
+        maxStaff: 2,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Khám khúc xạ",
+        slots: [
+          {
+            id: "slot_g_khucxa",
+            skillTagId: "sk-khucxa",
+            skillTag: "Khám khúc xạ",
+            title: "Kỹ thuật viên khúc xạ",
+            current: 0,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case H: HMK Nguyễn Trãi — PENDING registration (allows test of "Hủy đăng ký")
+      shifts.push({
+        id: "reg_case_h_pending",
+        date: day5,
+        statusUpdatedAt: new Date(day5.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Sáng (Đang chờ duyệt)",
+        timeStr: "08:00 - 15:00",
+        hours: 7,
+        currentStaff: 2,
+        maxStaff: 4,
+        status: "pending",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+        requestedSkillTagId: "Tư vấn",
+        slots: [
+          {
+            id: "slot_h_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 2,
+            max: 4,
+          },
+        ],
+      });
+
+      // Case I: HMK Nguyễn Trãi — Weekend Overtime (Ca Tăng ca cuối tuần)
+      shifts.push({
+        id: "reg_case_i_overtime",
+        date: day5,
+        statusUpdatedAt: new Date(day5.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Tăng ca cuối tuần (OT)",
+        timeStr: "17:00 - 21:00",
+        hours: 4,
+        currentStaff: 1,
+        maxStaff: 2,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Thu ngân",
+        slots: [
+          {
+            id: "slot_i_thungan",
+            skillTagId: "sk-thungan",
+            skillTag: "Thu ngân",
+            title: "Thu ngân ca cao điểm",
+            current: 1,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case J: HMK Nguyễn Trãi — Full Shift without slots (Ca đã đầy không chia slot)
+      shifts.push({
+        id: "reg_case_j_no_slots_full",
+        date: day6,
+        statusUpdatedAt: new Date(day6.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Chiều (Đã đủ định biên)",
+        timeStr: "15:00 - 22:00",
+        hours: 7,
+        currentStaff: 3,
+        maxStaff: 3,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+      });
+
+      // Case K: HMK Nguyễn Trãi — Split Shift (Ca Gãy giờ ăn trưa)
+      shifts.push({
+        id: "reg_case_k_split_shift",
+        date: day6,
+        statusUpdatedAt: new Date(day6.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Gãy (Trưa cao điểm)",
+        timeStr: "10:00 - 14:00",
+        hours: 4,
+        currentStaff: 0,
+        maxStaff: 2,
+        status: "open",
+        storeName: "HMK Nguyễn Trãi",
+        branchId: "br-nt",
+        skillTag: "Tư vấn",
+        slots: [
+          {
+            id: "slot_k_tuvan",
+            skillTagId: "sk-tuvan",
+            skillTag: "Tư vấn",
+            title: "Tư vấn bán hàng",
+            current: 0,
+            max: 2,
+          },
+        ],
+      });
+
+      // Case L: HMK Cầu Giấy — Support shift (Ca Hỗ trợ chi nhánh)
+      shifts.push({
+        id: "reg_case_l_support_cg",
+        date: day6,
+        statusUpdatedAt: new Date(day6.getTime() - 24 * 3600 * 1000),
+        shiftName: "Ca Tối (Hỗ trợ chi nhánh Cầu Giấy)",
+        timeStr: "17:00 - 23:00",
+        hours: 6,
+        currentStaff: 1,
+        maxStaff: 2,
+        status: "open",
+        isSupportShift: true,
+        storeName: "HMK Cầu Giấy",
+        branchId: "br-cg",
+        skillTag: "Thu ngân",
+        slots: [
+          {
+            id: "slot_l_thungan",
+            skillTagId: "sk-thungan",
+            skillTag: "Thu ngân",
+            title: "Thu ngân hỗ trợ",
+            current: 1,
+            max: 2,
+          },
+        ],
+      });
+    }
+
     for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
       const date = new Date(monday);
       date.setDate(date.getDate() + dayOffset);
 
       // Add 2 shifts per day for variety
       const types = [
-        { name: "Ca Sáng", time: "08:00 - 15:00", hours: 7, tag: "Tư vấn" },
-        { name: "Ca Chiều", time: "15:00 - 22:00", hours: 7, tag: "Thu ngân" },
+        { name: "Ca Sáng", time: "08:00 - 15:00", hours: 7, tag: "Tư vấn", tagId: "sk-tuvan" },
+        { name: "Ca Chiều", time: "15:00 - 22:00", hours: 7, tag: "Thu ngân", tagId: "sk-thungan" },
       ];
 
       types.forEach((type, i) => {
@@ -481,11 +918,14 @@ const generateShifts = (): Shift[] => {
           currentStaff: isPast ? 4 : 1,
           maxStaff: 5,
           status: shiftStatus,
-          storeName: "HMK Nguyễn Trãi",
+          storeName: i % 2 === 0 ? "HMK Nguyễn Trãi" : "HMK Cầu Giấy",
+          branchId: i % 2 === 0 ? "br-nt" : "br-cg",
           skillTag: type.tag,
+          assignedSkillTagId: isPast ? type.tag : undefined,
           slots: [
             {
               id: `${statusPrefix}_${weekOffset}_${dayOffset}_${i}_1`,
+              skillTagId: "sk-tuvan",
               skillTag: "Tư vấn",
               title: "Tư vấn bán hàng",
               current: isPast ? 3 : 1,
@@ -493,6 +933,7 @@ const generateShifts = (): Shift[] => {
             },
             {
               id: `${statusPrefix}_${weekOffset}_${dayOffset}_${i}_2`,
+              skillTagId: "sk-thungan",
               skillTag: "Thu ngân",
               title: "Thu ngân",
               current: isPast ? 1 : 0,
@@ -529,34 +970,147 @@ const generateShifts = (): Shift[] => {
   finalShifts.push({
     id: `case_approved_today`,
     date: today,
-    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(today.getTime() - 3 * 24 * 3600 * 1000 + 8 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000 + 9 * 3600 * 1000),
     shiftName: "Ca Sáng",
     timeStr: "08:00 - 15:00",
     hours: 7,
     currentStaff: 4,
     maxStaff: 5,
     status: "approved",
+    allowSwap: false,
     storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
     skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
+  });
+
+  // Dedicated Shift for testing Shift Swap UI anytime
+  finalShifts.push({
+    id: `case_swap_test_today`,
+    date: today,
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(today.getTime() - 3 * 24 * 3600 * 1000 + 8 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000 + 9 * 3600 * 1000),
+    shiftName: "Ca Chiều (Được phép đổi ca)",
+    timeStr: "15:00 - 22:00",
+    hours: 7,
+    currentStaff: 3,
+    maxStaff: 5,
+    status: "approved",
+    allowSwap: true,
+    storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
+    skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
+  });
+
+  // Normal assignment at HMK Cầu Giấy as Thu ngân
+  finalShifts.push({
+    id: `case_approved_cg_today`,
+    date: today,
+    createdBy: "Lê Hoàng Yến (QL Khu Vực)",
+    createdAt: new Date(today.getTime() - 4 * 24 * 3600 * 1000 + 10 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000 + 14 * 3600 * 1000),
+    shiftName: "Ca Tối",
+    timeStr: "18:00 - 22:00",
+    hours: 4,
+    currentStaff: 2,
+    maxStaff: 3,
+    status: "approved",
+    allowSwap: false,
+    storeName: "HMK Cầu Giấy",
+    branchId: "br-cg",
+    skillTag: "Thu ngân",
+    assignedSkillTagId: "Thu ngân",
+  });
+
+  // Temporary Support assignment at HMK Thủ Đức (even though Thủ Đức is not in Working Branches)
+  finalShifts.push({
+    id: `case_support_td_today`,
+    date: today,
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(today.getTime() - 2 * 24 * 3600 * 1000 + 11 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000 + 15 * 3600 * 1000),
+    shiftName: "Ca Tối (Hỗ trợ)",
+    timeStr: "17:00 - 23:00",
+    hours: 6,
+    currentStaff: 1,
+    maxStaff: 2,
+    status: "approved",
+    isSupportShift: true,
+    allowSwap: true,
+    storeName: "HMK Thủ Đức",
+    branchId: "br-td",
+    skillTag: "Thu ngân",
+    assignedSkillTagId: "Thu ngân",
+  });
+
+  // Adhoc / Overtime Shift for testing Attendance & QC verification
+  finalShifts.push({
+    id: `adhoc_today_demo`,
+    date: today,
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(today.getTime() - 14 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 12 * 3600 * 1000),
+    shiftName: "Ca Đột xuất (Tăng ca QC)",
+    timeStr: "13:00 - 17:00",
+    hours: 4,
+    currentStaff: 1,
+    maxStaff: 2,
+    status: "approved",
+    isAdhoc: true,
+    adhocReason: "Tăng viện đột xuất cuối tuần - Chờ QC hậu kiểm",
+    storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
+    skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
+  });
+
+  // Return Shift after buddy store support
+  finalShifts.push({
+    id: `case_return_today`,
+    date: today,
+    createdBy: "Hệ thống (Auto-schedule)",
+    createdAt: new Date(today.getTime() - 2 * 24 * 3600 * 1000),
+    statusUpdatedAt: new Date(today.getTime() - 12 * 3600 * 1000),
+    shiftName: "Ca Tối (Quay lại Store A)",
+    timeStr: "19:00 - 22:00",
+    hours: 3,
+    currentStaff: 1,
+    maxStaff: 2,
+    status: "approved",
+    isReturnShift: true,
+    storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
+    skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
   });
 
   finalShifts.push({
     id: `case_pending_today`,
     date: today,
+    createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+    createdAt: new Date(today.getTime() - 24 * 3600 * 1000),
     statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
-    shiftName: "Ca Chiều",
+    shiftName: "Ca Chiều (Chờ duyệt)",
     timeStr: "15:00 - 22:00",
     hours: 7,
     currentStaff: 3,
     maxStaff: 5,
     status: "pending",
     storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
     skillTag: "Tư vấn",
+    requestedSkillTagId: "Tư vấn",
   });
 
   finalShifts.push({
     id: `case_cancelled_today`,
     date: today,
+    createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+    createdAt: new Date(today.getTime() - 3 * 24 * 3600 * 1000),
     statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
     shiftName: "Ca Tối",
     timeStr: "17:00 - 23:00",
@@ -564,13 +1118,17 @@ const generateShifts = (): Shift[] => {
     currentStaff: 3,
     maxStaff: 5,
     status: "cancelled",
+    cancelReason: "Nhân viên huỷ đăng ký",
     storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
     skillTag: "Thu ngân",
   });
 
   finalShifts.push({
     id: `case_handshake_today`,
     date: today,
+    createdBy: "Lê Hoàng Yến (QL Khu Vực)",
+    createdAt: new Date(today.getTime() - 3 * 24 * 3600 * 1000),
     statusUpdatedAt: new Date(today.getTime() - 24 * 3600 * 1000),
     shiftName: "Điều động Kẹp Ca (A → B → A)",
     timeStr: "08:00 - 18:00",
@@ -579,7 +1137,9 @@ const generateShifts = (): Shift[] => {
     maxStaff: 1,
     status: "approved",
     storeName: "HMK Nguyễn Trãi",
+    branchId: "br-nt",
     skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
     isBuddyStore: true,
     requireHandshake: true,
     isSandwichHandshake: true,
@@ -597,6 +1157,8 @@ const generateShifts = (): Shift[] => {
   finalShifts.push({
     id: `case_swap_tomorrow`,
     date: tomorrow,
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(tomorrow.getTime() - 3 * 24 * 3600 * 1000),
     statusUpdatedAt: new Date(tomorrow.getTime() - 24 * 3600 * 1000),
     shiftName: "Ca Xuyên Đêm",
     timeStr: "00:00 - 08:00",
@@ -605,13 +1167,17 @@ const generateShifts = (): Shift[] => {
     maxStaff: 2,
     status: "approved",
     storeName: "HMK Nguyễn Trãi",
-    skillTag: "Kho",
+    branchId: "br-nt",
+    skillTag: "Tư vấn",
+    assignedSkillTagId: "Tư vấn",
     isPendingSwap: true,
   });
 
   finalShifts.push({
     id: `case_approved_next_week`,
     date: nextWeekDay,
+    createdBy: "Phan Hải Đăng (CHT)",
+    createdAt: new Date(nextWeekDay.getTime() - 3 * 24 * 3600 * 1000),
     statusUpdatedAt: new Date(nextWeekDay.getTime() - 24 * 3600 * 1000),
     shiftName: "Ca Sáng",
     timeStr: "08:00 - 15:00",
@@ -619,8 +1185,28 @@ const generateShifts = (): Shift[] => {
     currentStaff: 5,
     maxStaff: 5,
     status: "approved",
+    allowSwap: true,
     storeName: "HMK Nguyễn Trãi",
     skillTag: "Tư vấn",
+  });
+
+  finalShifts.push({
+    id: `case_swap_test_next_week`,
+    date: nextWeekDay,
+    createdBy: "Lê Hoàng Yến (QL Khu Vực)",
+    createdAt: new Date(nextWeekDay.getTime() - 3 * 24 * 3600 * 1000),
+    statusUpdatedAt: new Date(nextWeekDay.getTime() - 24 * 3600 * 1000),
+    shiftName: "Ca Chiều (Cho phép đổi ca)",
+    timeStr: "15:00 - 22:00",
+    hours: 7,
+    currentStaff: 2,
+    maxStaff: 4,
+    status: "approved",
+    allowSwap: true,
+    storeName: "HMK Cầu Giấy",
+    branchId: "br-cg",
+    skillTag: "Thu ngân",
+    assignedSkillTagId: "Thu ngân",
   });
 
   return finalShifts;
@@ -899,34 +1485,132 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [briefings, setBriefings] = useState<ShiftBriefing[]>(mockBriefingsData);
   const maxHoursPerWeek = 60;
 
-  const [attendanceSessions, setAttendanceSessions] = useState<ShiftAttendanceSession[]>([]);
+  // QA Notification Contextual Navigation Harness State
+  const [qaNotificationScenario, setQaNotificationScenario] = useState<QaScenario | null>(null);
+  const [qaDiagnosticResult, setQaDiagnosticResult] = useState<QaDiagnosticResult | null>(null);
 
-  const recordCheckIn = (shift: Shift, isAdhoc?: boolean) => {
+  const [attendanceSessions, setAttendanceSessions] = useState<ShiftAttendanceSession[]>(() => {
+    const today = new Date();
+    const t1 = new Date(today);
+    t1.setHours(7, 58, 12, 0);
+    const t2 = new Date(today);
+    t2.setHours(15, 2, 45, 0);
+
+    const t3 = new Date(today);
+    t3.setHours(13, 0, 0, 0);
+    const t4 = new Date(today);
+    t4.setHours(17, 0, 0, 0);
+
+    return [
+      {
+        id: "sess_morning_completed",
+        shiftId: "case_approved_today",
+        shiftName: "Ca Sáng (08:00 - 15:00)",
+        storeName: "HMK Nguyễn Trãi",
+        timeStr: "08:00 - 15:00",
+        hours: 7,
+        date: new Date(today),
+        checkInTime: t1,
+        checkOutTime: t2,
+        status: "completed",
+        statusBadge: "Đã hoàn tất",
+      },
+      {
+        id: "sess_adhoc_pending",
+        shiftId: "adhoc_today_demo",
+        shiftName: "Ca Đột xuất (Tăng ca QC)",
+        storeName: "HMK Nguyễn Trãi",
+        timeStr: "13:00 - 17:00",
+        hours: 4,
+        date: new Date(today),
+        checkInTime: t3,
+        checkOutTime: t4,
+        status: "pending_qc",
+        statusBadge: "Chờ QC duyệt",
+        isAdhoc: true,
+        note: "Tăng viện đột xuất cuối tuần - Chờ QC hậu kiểm",
+      },
+    ];
+  });
+
+  const getActiveAttendance = (employeeId?: string): ShiftAttendanceSession | null => {
+    return (
+      attendanceSessions.find(
+        (s) =>
+          !s.checkOutTime &&
+          (s.status === "working" ||
+            s.status === "pending_qc" ||
+            s.status === "IN_PROGRESS")
+      ) || null
+    );
+  };
+
+  const activeAttendance = useMemo(() => {
+    return getActiveAttendance();
+  }, [attendanceSessions]);
+
+  const recordCheckIn = (
+    shift: Shift,
+    isAdhoc?: boolean,
+    options?: { isApprovedTransition?: boolean }
+  ): CheckInResult => {
+    const active = getActiveAttendance();
+
+    // CASE 2: Same shift reopen / resume -> Idempotent!
+    if (active && active.shiftId === shift.id) {
+      return {
+        success: true,
+        status: 200,
+        resumed: true,
+        session: active,
+        message: "Tiếp tục ca làm việc hiện tại",
+      };
+    }
+
+    // CASE 3: Another shift is already IN_PROGRESS and NOT an approved transition
+    if (active && active.shiftId !== shift.id && !options?.isApprovedTransition) {
+      return {
+        success: false,
+        status: 409,
+        errorCode: "ACTIVE_ATTENDANCE_EXISTS",
+        message: `Bạn đang chấm công ${active.shiftName} (${active.timeStr}) tại ${active.storeName}. Vui lòng hoàn tất ca hiện tại trước khi vào ca khác.`,
+        activeContext: {
+          activeAttendanceId: active.id,
+          activeShiftId: active.shiftId,
+          activeShiftName: active.shiftName,
+          activeBranch: active.storeName,
+          actualCheckInTime: active.checkInTime,
+        },
+      };
+    }
+
+    // CASE 1: No active attendance (or approved transition where previous is closed)
     const isAdhocShift = Boolean(
       isAdhoc ||
       shift.isAdhoc ||
       shift.id.startsWith("adhoc_") ||
       shift.shiftName.toLowerCase().includes("đột xuất")
     );
+
+    const newSession: ShiftAttendanceSession = {
+      id: `sess_${shift.id}_${Date.now()}`,
+      shiftId: shift.id,
+      shiftName: shift.shiftName,
+      storeName: shift.storeName,
+      timeStr: shift.timeStr,
+      hours: shift.hours,
+      date: new Date(),
+      checkInTime: new Date(),
+      status: isAdhocShift ? "pending_qc" : "working",
+      statusBadge: isAdhocShift ? "Chờ QC duyệt" : "Đang làm việc",
+      isAdhoc: isAdhocShift,
+      isSupportShift: Boolean(shift.isSupportShift),
+      isReturnShift: Boolean(shift.isReturnShift),
+      note: isAdhocShift ? "Chấm công đột xuất - Chờ QC duyệt" : undefined,
+    };
+
     setAttendanceSessions((prev) => {
       const existingIdx = prev.findIndex((s) => s.shiftId === shift.id);
-      const newSession: ShiftAttendanceSession = {
-        id: existingIdx >= 0 ? prev[existingIdx].id : `sess_${shift.id}_${Date.now()}`,
-        shiftId: shift.id,
-        shiftName: shift.shiftName,
-        storeName: shift.storeName,
-        timeStr: shift.timeStr,
-        hours: shift.hours,
-        date: new Date(),
-        checkInTime: new Date(),
-        checkOutTime: existingIdx >= 0 ? prev[existingIdx].checkOutTime : undefined,
-        status: isAdhocShift ? "pending_qc" : "working",
-        statusBadge: isAdhocShift ? "Chờ QC duyệt" : "Đang làm việc",
-        isAdhoc: isAdhocShift,
-        isSupportShift: Boolean(shift.isSupportShift),
-        isReturnShift: Boolean(shift.isReturnShift),
-        note: isAdhocShift ? "Chấm công đột xuất - Chờ QC duyệt" : undefined,
-      };
       if (existingIdx >= 0) {
         const next = [...prev];
         next[existingIdx] = newSession;
@@ -934,9 +1618,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       return [newSession, ...prev];
     });
+
+    return {
+      success: true,
+      status: 200,
+      session: newSession,
+      message: "Check-in thành công",
+    };
   };
 
-  const recordCheckOut = (shiftId: string) => {
+  const recordCheckOut = (shiftId: string, note?: string) => {
     setAttendanceSessions((prev) => {
       const existingIdx = prev.findIndex((s) => s.shiftId === shiftId);
       if (existingIdx >= 0) {
@@ -947,11 +1638,79 @@ export function AppProvider({ children }: { children: ReactNode }) {
           checkOutTime: new Date(),
           status: "completed",
           statusBadge: "Đã hoàn tất",
+          note: note || current.note,
         };
         return next;
       }
       return prev;
     });
+  };
+
+  const simulateAutoCheckout = (shiftId?: string) => {
+    const active = getActiveAttendance();
+    const targetId = shiftId || active?.shiftId;
+    if (targetId) {
+      recordCheckOut(targetId, "Auto-checkout do quá ngưỡng");
+    }
+  };
+
+  const executeAdhocToStandardTransition = (
+    standardShift: Shift,
+    preValidateSecurity: () => boolean
+  ): { success: boolean; message: string; errorCode?: string } => {
+    const active = getActiveAttendance();
+    if (!active) {
+      return { success: false, message: "Không tìm thấy ca đột xuất đang hoạt động." };
+    }
+
+    // 1. Pre-validate security of target standard shift
+    const isSecurityPassed = preValidateSecurity();
+    if (!isSecurityPassed) {
+      return {
+        success: false,
+        errorCode: "SECURITY_VALIDATION_FAILED",
+        message: "Không thể chuyển ca do điều kiện bảo mật của ca mới chưa hợp lệ (GPS/Wi-Fi). Ca đột xuất được giữ nguyên.",
+      };
+    }
+
+    // 2. Auto Check-out Ad-hoc A first
+    const now = new Date();
+    setAttendanceSessions((prev) => {
+      return prev.map((s) => {
+        if (s.id === active.id || s.shiftId === active.shiftId) {
+          return {
+            ...s,
+            checkOutTime: now,
+            status: "completed",
+            statusBadge: "Đã hoàn tất (Chuyển ca)",
+          };
+        }
+        return s;
+      });
+    });
+
+    // 3. Start Standard Shift B as sole IN_PROGRESS
+    const newSession: ShiftAttendanceSession = {
+      id: `sess_${standardShift.id}_${Date.now()}`,
+      shiftId: standardShift.id,
+      shiftName: standardShift.shiftName,
+      storeName: standardShift.storeName,
+      timeStr: standardShift.timeStr,
+      hours: standardShift.hours,
+      date: new Date(),
+      checkInTime: now,
+      status: "working",
+      statusBadge: "Đang làm việc",
+      isSupportShift: Boolean(standardShift.isSupportShift),
+      isReturnShift: Boolean(standardShift.isReturnShift),
+    };
+
+    setAttendanceSessions((prev) => [newSession, ...prev]);
+
+    return {
+      success: true,
+      message: `Đã kết thúc ca đột xuất và chuyển sang ${standardShift.shiftName} (${standardShift.timeStr}) thành công!`,
+    };
   };
 
   const registeredHours = availableShifts
@@ -1208,10 +1967,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const handleShiftAction = (
     shiftId: string,
     action: "register" | "cancel",
+    requestedSkillTagId?: string,
   ): boolean => {
     if (action === "register") {
       const targetShift = availableShifts.find((s) => s.id === shiftId);
       if (targetShift) {
+        // Eligibility check 1: Multi-Branch Working Eligibility (CR-12SEP-01)
+        // Check if shift is SupportShift OR storeName in employee's active working branches
+        const userActiveWorkingBranches = user?.workingBranches
+          ? user.workingBranches.filter((b) => b.status === "ACTIVE").map((b) => b.branchName)
+          : user?.authorizedBranches || [];
+        
+        const isBranchEligible = targetShift.isSupportShift || userActiveWorkingBranches.includes(targetShift.storeName);
+        if (!isBranchEligible) {
+          console.warn(`Lỗi: Chi nhánh ${targetShift.storeName} không nằm trong danh sách chi nhánh làm việc hiệu lực của bạn!`);
+          return false;
+        }
+
+        // Eligibility check 2: Multi-Skill Tag Eligibility (CR-12SEP-02)
+        const userActiveSkills = user?.skillTags
+          ? user.skillTags.filter((st) => st.status === "ACTIVE").map((st) => st.skillTagName)
+          : user?.skills || [];
+
+        const chosenSkill = requestedSkillTagId || targetShift.skillTag;
+        const isSkillEligible = userActiveSkills.includes(chosenSkill);
+        if (!isSkillEligible) {
+          console.warn(`Lỗi: Kỹ năng ${chosenSkill} không nằm trong danh sách kỹ năng hiệu lực của bạn!`);
+          return false;
+        }
+
         // Check if there is a leave conflict
         if (hasLeaveConflict(targetShift.date)) {
           console.warn("Lỗi: Trùng lịch nghỉ phép.");
@@ -1219,10 +2003,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         // Check overlap
+        const targetDateStr = targetShift.date ? new Date(targetShift.date).toDateString() : "";
         const myActiveShifts = availableShifts.filter(
           (s) =>
             (s.status === "approved" || s.status === "pending") &&
-            s.date.toDateString() === targetShift.date.toDateString(),
+            s.date &&
+            new Date(s.date).toDateString() === targetDateStr,
         );
 
         const parseTime = (t: string) => parseInt(t.replace(":", ""), 10);
@@ -1248,10 +2034,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
             return {
               ...shift,
               status: shift.currentStaff >= shift.maxStaff ? "full" : "open",
+              requestedSkillTagId: undefined,
+              statusUpdatedAt: new Date(),
             };
           }
           if (action === "register") {
-            return { ...shift, status: "pending" };
+            const finalSkill = requestedSkillTagId || shift.requestedSkillTagId || shift.skillTag;
+            return {
+              ...shift,
+              status: "pending",
+              requestedSkillTagId: finalSkill,
+              assignedSkillTagId: finalSkill,
+              createdBy: shift.createdBy || "Nguyễn Trần Đăng Quang (Bạn)",
+              createdAt: shift.createdAt || new Date(),
+              statusUpdatedAt: new Date(),
+            };
           }
         }
         return shift;
@@ -1807,8 +2604,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         markBriefingAsRead,
         acknowledgeBriefing,
         attendanceSessions,
+        setAttendanceSessions,
+        getActiveAttendance,
+        activeAttendance,
         recordCheckIn,
         recordCheckOut,
+        simulateAutoCheckout,
+        executeAdhocToStandardTransition,
+        setAvailableShifts,
         attendanceTickets,
         submitAttendanceTicket,
         cancelPendingAttendanceTicket,
@@ -1822,6 +2625,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         createBackdatedLeaveFromMissingBoth,
         commitAttendanceCorrection,
         togglePeriodLockForTicket,
+        setBriefings,
+        setAttendanceTickets,
+        setLeaveRequests,
+        qaNotificationScenario,
+        setQaNotificationScenario,
+        qaDiagnosticResult,
+        setQaDiagnosticResult,
       }}
     >
       {children}
