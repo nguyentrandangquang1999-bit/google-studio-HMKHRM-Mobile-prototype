@@ -11,6 +11,11 @@ import {
   BellRing,
   X,
   CheckCircle,
+  SlidersHorizontal,
+  Calendar,
+  RotateCcw,
+  Check,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp, AttendanceTicket } from "@/context/AppContext";
@@ -19,6 +24,28 @@ import NotificationQaSwitcher from "@/components/NotificationQaSwitcher";
 import { QaScenario } from "@/types/qaNotification";
 
 type NotificationType = "system" | "task" | "approval" | "briefing";
+export type QuickFilterTab = "all" | "action_needed" | "unread";
+
+export type NotificationTypeFilter = "ALL" | "TICKET" | "SHIFT" | "SHIFT_BRIEFING" | "SYSTEM";
+export type ProcessingStatusFilter = "ALL" | "ACTION_NEEDED" | "PROCESSED";
+export type ReadStatusFilter = "ALL" | "UNREAD" | "READ";
+export type TimeFilter = "ALL" | "TODAY" | "LAST_7_DAYS" | "LAST_30_DAYS" | "CUSTOM";
+
+export interface AdvancedFilterState {
+  type: NotificationTypeFilter;
+  processingStatus: ProcessingStatusFilter;
+  readStatus: ReadStatusFilter;
+  time: TimeFilter;
+  customStartDate?: string;
+  customEndDate?: string;
+}
+
+export const DEFAULT_ADVANCED_FILTERS: AdvancedFilterState = {
+  type: "ALL",
+  processingStatus: "ALL",
+  readStatus: "ALL",
+  time: "ALL",
+};
 
 export type NotificationGroup = "TICKET" | "SHIFT" | "SHIFT_BRIEFING";
 
@@ -221,9 +248,17 @@ export default function Notifications() {
     }
   }, [toastMessage]);
   
-  const initialTab = searchParams.get("tab") as NotificationType | "all" | null;
-  const [activeTab, setActiveTab] = useState<"all" | NotificationType>(initialTab && ["all", "system", "task", "approval", "briefing"].includes(initialTab) ? initialTab : "all");
+  const initialTab = searchParams.get("tab") as QuickFilterTab | null;
+  const [activeTab, setActiveTab] = useState<QuickFilterTab>(
+    initialTab && ["all", "action_needed", "unread"].includes(initialTab) ? initialTab : "all"
+  );
   
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [appliedFilters, setAppliedFilters] = useState<AdvancedFilterState>(DEFAULT_ADVANCED_FILTERS);
+  const [tempFilters, setTempFilters] = useState<AdvancedFilterState>(DEFAULT_ADVANCED_FILTERS);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showMarkAllConfirm, setShowMarkAllConfirm] = useState(false);
+
   const [localNotifications, setLocalNotifications] = useState(mockNotifications);
 
   const [selectedBriefingId, setSelectedBriefingId] = useState<string | null>(searchParams.get("id"));
@@ -513,7 +548,7 @@ export default function Notifications() {
           isAcknowledged: false,
         };
         setBriefings((prev) => [urgentBriefing, ...prev.filter((b) => b.id !== "briefing_qa_12")]);
-        setActiveTab("briefing");
+        setActiveTab("action_needed");
         break;
       }
 
@@ -533,7 +568,7 @@ export default function Notifications() {
           acknowledgedAt: new Date(Date.now() - 1800000).toISOString(),
         };
         setBriefings((prev) => [ackBriefing, ...prev.filter((b) => b.id !== "briefing_qa_13")]);
-        setActiveTab("briefing");
+        setActiveTab("all");
         break;
       }
 
@@ -685,6 +720,8 @@ export default function Notifications() {
     setQaDiagnosticResult(null);
     setLocalNotifications(mockNotifications);
     setActiveTab("all");
+    setAppliedFilters(DEFAULT_ADVANCED_FILTERS);
+    setTempFilters(DEFAULT_ADVANCED_FILTERS);
     setSelectedBriefingId(null);
     setAttendanceTickets([
       {
@@ -747,22 +784,575 @@ export default function Notifications() {
     }))
   ];
 
-  const tabs: { id: "all" | NotificationType; label: string }[] = [
+  const formatDateDDMMYYYY = (d: any): string => {
+    if (!d) return "";
+    const dateObj = d instanceof Date ? d : new Date(d);
+    if (isNaN(dateObj.getTime())) return "";
+    const day = String(dateObj.getDate()).padStart(2, "0");
+    const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+    const year = dateObj.getFullYear();
+    return `${day}/${month}/${year}`;
+  };
+
+  interface BusinessStatusBadge {
+    label: string;
+    badgeClass: string;
+  }
+
+  const getNotificationBusinessStatus = (notification: NotificationProps): BusinessStatusBadge | null => {
+    // 1. Shift Briefing
+    if (notification.type === "briefing" || notification.notificationGroup === "SHIFT_BRIEFING" || notification.briefingId) {
+      const bId = notification.briefingId || notification.id;
+      const b = briefings.find((item) => item.id === bId);
+      if (b) {
+        if (b.isAcknowledged) {
+          return {
+            label: "ĐÃ XÁC NHẬN",
+            badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+          };
+        }
+        if (b.isUrgent) {
+          return {
+            label: "CẦN XÁC NHẬN",
+            badgeClass: "bg-orange-50 text-orange-700 border-orange-200",
+          };
+        }
+      }
+      if (notification.isAcknowledged) {
+        return {
+          label: "ĐÃ XÁC NHẬN",
+          badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+        };
+      }
+      if (notification.isUrgent) {
+        return {
+          label: "CẦN XÁC NHẬN",
+          badgeClass: "bg-orange-50 text-orange-700 border-orange-200",
+        };
+      }
+      return null;
+    }
+
+    // 2. Ticket / Request
+    if (notification.notificationGroup === "TICKET" || notification.ticketId) {
+      const tId = notification.ticketId;
+      if (tId) {
+        // Check in attendanceTickets
+        const att = attendanceTickets.find((t) => t.id === tId);
+        if (att) {
+          if (att.status === "APPROVED") {
+            return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+          }
+          if (att.status === "REJECTED" || att.status === "AUTO_REJECTED") {
+            return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+          }
+          if (att.status === "CANCELLED") {
+            return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+          }
+          if (att.status === "PENDING") {
+            // If already resolved/submitted by employee
+            if (att.resolutionPath || att.linkedLeaveRequestId || att.reason?.includes("Đã gửi")) {
+              return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+            }
+            return { label: "CẦN XỬ LÝ", badgeClass: "bg-red-50 text-red-700 border-red-200" };
+          }
+        }
+
+        // Check in leaveRequests
+        const lr = leaveRequests.find((r) => r.id === tId);
+        if (lr) {
+          if (lr.status === "APPROVED") {
+            return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+          }
+          if (lr.status === "REJECTED" || lr.status === "AUTO_REJECTED") {
+            return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+          }
+          if (lr.status === "CANCELLED") {
+            return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+          }
+          if (lr.status === "PENDING") {
+            return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+          }
+        }
+
+        // Static matches for seed tickets
+        if (tId === "LR-001") {
+          return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+        }
+        if (tId === "LR-002") {
+          return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+        }
+        if (tId === "LR-003") {
+          return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+        }
+        if (tId === "RQ-SWAP-01") {
+          return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+        }
+        if (tId === "RQ-SWAP-02") {
+          return { label: "CẦN XÁC NHẬN", badgeClass: "bg-orange-50 text-orange-700 border-orange-200" };
+        }
+        if (tId === "RQ-SWAP-05") {
+          return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+        }
+        if (tId === "TK-OUT-032" || tId === "TK-IN-017" || tId === "TK-MB-301" || tId.startsWith("TK-DEEP")) {
+          return { label: "CẦN XỬ LÝ", badgeClass: "bg-red-50 text-red-700 border-red-200" };
+        }
+      }
+
+      if (notification.title.includes("Cần xử lý") || notification.title.includes("Chờ xử lý")) {
+        return { label: "CẦN XỬ LÝ", badgeClass: "bg-red-50 text-red-700 border-red-200" };
+      }
+      if (notification.title.includes("đã được duyệt") || notification.title.includes("Đã duyệt")) {
+        return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+      }
+      if (notification.title.includes("từ chối") || notification.title.includes("bị từ chối")) {
+        return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+      }
+      if (notification.title.includes("đã được gửi") || notification.title.includes("được gửi")) {
+        return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+      }
+    }
+
+    // 3. Shift
+    if (notification.notificationGroup === "SHIFT" || notification.shiftId) {
+      const sId = notification.shiftId;
+      if (sId) {
+        const shift = availableShifts.find((s) => s.id === sId);
+        if (shift) {
+          if (shift.status === "approved" || shift.status === "assigned" || shift.status === "open") {
+            return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+          }
+          if (shift.status === "cancelled") {
+            return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+          }
+          if (shift.status === "rejected") {
+            return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+          }
+          if (shift.status === "pending") {
+            return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+          }
+        }
+        if (sId === "case_cancelled_today" || sId === "SHIFT-MISSING-999") {
+          return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+        }
+        if (sId === "case_approved_today" || sId === "case_approved_cg_today" || sId === "shift_outside_week_018" || sId === "SHIFT-101" || sId === "SHIFT-102") {
+          return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+        }
+      }
+      if (notification.title.includes("bị tước") || notification.title.includes("đã bị Hủy") || notification.title.includes("bị xóa")) {
+        return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+      }
+      if (notification.title.includes("xếp") || notification.title.includes("Phân công") || notification.title.includes("mới")) {
+        return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+      }
+    }
+
+    // 4. Task
+    if (notification.type === "task") {
+      if (notification.isRead) {
+        return null;
+      }
+      return { label: "CẦN XỬ LÝ", badgeClass: "bg-amber-50 text-amber-700 border-amber-200" };
+    }
+
+    // 5. System policy
+    if (notification.type === "system" && notification.title.includes("Chính sách mới")) {
+      return notification.isRead ? null : { label: "CẦN XÁC NHẬN", badgeClass: "bg-orange-50 text-orange-700 border-orange-200" };
+    }
+
+    return null;
+  };
+
+  const getNotificationBusinessContext = (notification: NotificationProps): string | null => {
+    // 1. Shift Briefing
+    if (notification.type === "briefing" || notification.notificationGroup === "SHIFT_BRIEFING" || notification.briefingId) {
+      const bId = notification.briefingId || notification.id;
+      const b = briefings.find((item) => item.id === bId);
+      if (b) {
+        const parts = [b.storeName || "HMK Nguyễn Trãi"];
+        if (b.shiftName) parts.push(b.shiftName);
+        if (b.shiftTime) parts.push(b.shiftTime);
+        return parts.join(" • ");
+      }
+      return notification.storeName ? `Bảng tin • ${notification.storeName}` : "Bảng tin đầu ca • HMK Nguyễn Trãi";
+    }
+
+    // 2. Ticket / Request
+    if (notification.notificationGroup === "TICKET" || notification.ticketId) {
+      const tId = notification.ticketId;
+      if (tId) {
+        // Check in attendanceTickets
+        const att = attendanceTickets.find((t) => t.id === tId);
+        if (att) {
+          const parts = [`Ticket ${att.id}`];
+          if (att.relatedShift?.shiftName) parts.push(att.relatedShift.shiftName);
+          if (att.relatedShift?.storeName) parts.push(att.relatedShift.storeName);
+          else if (notification.storeName) parts.push(notification.storeName);
+          return parts.join(" • ");
+        }
+
+        // Check in leaveRequests
+        const lr = leaveRequests.find((r) => r.id === tId);
+        if (lr) {
+          const parts = [`Đơn ${lr.id}`];
+          if (lr.branch) parts.push(lr.branch);
+          else parts.push("HMK Nguyễn Trãi");
+          return parts.join(" • ");
+        }
+
+        if (tId.startsWith("TK-")) {
+          return `Ticket ${tId} • HMK Nguyễn Trãi`;
+        }
+        if (tId.startsWith("LR-")) {
+          return `Đơn nghỉ phép ${tId} • HMK Nguyễn Trãi`;
+        }
+        if (tId.startsWith("RQ-SWAP")) {
+          return `Đổi ca ${tId} • HMK Nguyễn Trãi`;
+        }
+      }
+      return null;
+    }
+
+    // 3. Shift
+    if (notification.notificationGroup === "SHIFT" || notification.shiftId) {
+      const sId = notification.shiftId;
+      if (sId) {
+        const shift = availableShifts.find((s) => s.id === sId);
+        if (shift) {
+          const parts: string[] = [];
+          if (shift.date) {
+            const d = shift.date instanceof Date ? shift.date : new Date(shift.date);
+            const now = new Date();
+            if (d.toDateString() !== now.toDateString()) {
+              parts.push(formatDateDDMMYYYY(d));
+            }
+          }
+          if (shift.shiftName) parts.push(shift.shiftName);
+          if (shift.timeStr) parts.push(shift.timeStr);
+          if (shift.storeName) parts.push(shift.storeName);
+          return parts.length > 0 ? parts.join(" • ") : null;
+        }
+
+        if (sId === "case_approved_today" || sId === "0" || sId === "sys-1") {
+          return "Ca Sáng • 08:00–15:00 • HMK Nguyễn Trãi";
+        }
+        if (sId === "case_approved_cg_today" || sId === "sys-2") {
+          return "Ca Sáng • 08:00–15:00 • HMK Cầu Giấy";
+        }
+        if (sId === "case_cancelled_today" || sId === "ns-1") {
+          return "Ca Chiều • HMK Nguyễn Trãi";
+        }
+        if (sId === "shift_outside_week_018") {
+          return "18/09/2026 • Ca Tối • HMK Nguyễn Trãi";
+        }
+        if (sId === "shift_status_changed_demo") {
+          return "Ca Chiều • 13:00–20:00 • HMK Cầu Giấy";
+        }
+        if (sId === "SHIFT-101" || sId === "SHIFT-102") {
+          return "Ca Sáng • 08:00–15:00 • HMK Nguyễn Trãi";
+        }
+        if (sId === "SHIFT-MISSING-999") {
+          return "Ca làm việc • HMK Nguyễn Trãi";
+        }
+      }
+      return notification.storeName ? `Ca làm • ${notification.storeName}` : null;
+    }
+
+    // 4. Task
+    if (notification.type === "task") {
+      if (notification.title.includes("giao công việc")) {
+        return "Nhiệm vụ • Hạn 15:00 hôm nay";
+      }
+      if (notification.title.includes("đến hạn")) {
+        return "Kiểm kho • Còn 30 phút";
+      }
+      return "Nhiệm vụ công việc";
+    }
+
+    // 5. System
+    if (notification.type === "system") {
+      if (notification.title.includes("Chính sách")) {
+        return "Chính sách vận hành • Toàn hệ thống";
+      }
+      if (notification.title.includes("Bảo trì") || notification.message.includes("bảo trì")) {
+        return "Bảo trì hệ thống";
+      }
+    }
+
+    return notification.storeName || null;
+  };
+
+  const isNotificationActionNeeded = (notification: NotificationProps): boolean => {
+    // 1. Shift Briefing: requires urgent acknowledgement and not yet acknowledged in current business state
+    if (notification.type === "briefing" || notification.notificationGroup === "SHIFT_BRIEFING" || notification.briefingId) {
+      const bId = notification.briefingId || notification.id;
+      const b = briefings.find((item) => item.id === bId);
+      if (b) {
+        return Boolean(b.isUrgent && !b.isAcknowledged);
+      }
+      return Boolean(notification.isUrgent && !notification.isAcknowledged);
+    }
+
+    // 2. Ticket: currently belonging to Yêu cầu → Xử lý (Received / Processing tab)
+    if (notification.notificationGroup === "TICKET" || notification.ticketId) {
+      const tId = notification.ticketId;
+      if (!tId) return false;
+
+      // Check in current attendanceTickets state
+      const att = attendanceTickets.find((t) => t.id === tId);
+      if (att) {
+        // If the attendance ticket is still unresolved / pending employee explanation in "Xử lý"
+        return att.status === "PENDING" && !att.resolutionPath && !att.linkedLeaveRequestId && !att.reason?.includes("Đã gửi");
+      }
+
+      // Special received request items from peers needing employee action (e.g. incoming swap)
+      if (tId === "RQ-SWAP-02") {
+        return true;
+      }
+      if (tId === "TK-OUT-032" || tId === "TK-IN-017" || tId.startsWith("TK-DEEP")) {
+        return true;
+      }
+
+      return false;
+    }
+
+    return false;
+  };
+
+  const getNotificationCategory = (n: NotificationProps): NotificationTypeFilter => {
+    if (n.notificationGroup === "TICKET" || Boolean(n.ticketId)) {
+      return "TICKET";
+    }
+    if (n.notificationGroup === "SHIFT" || Boolean(n.shiftId)) {
+      return "SHIFT";
+    }
+    if (n.notificationGroup === "SHIFT_BRIEFING" || n.type === "briefing" || Boolean(n.briefingId)) {
+      return "SHIFT_BRIEFING";
+    }
+    return "SYSTEM";
+  };
+
+  const isNotificationInTimeRange = (
+    n: NotificationProps,
+    timeFilter: TimeFilter,
+    customStart?: string,
+    customEnd?: string
+  ): boolean => {
+    if (timeFilter === "ALL") return true;
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+    let notiDate = new Date();
+    const timeStr = n.time || "";
+
+    if (
+      timeStr.includes("phút") ||
+      timeStr.includes("giờ") ||
+      timeStr.includes("Vừa xong") ||
+      timeStr.includes("Vài giây") ||
+      timeStr.includes("Hôm nay") ||
+      timeStr.includes("Cần xác nhận")
+    ) {
+      notiDate = new Date(todayStart + 12 * 3600 * 1000);
+    } else if (timeStr.includes("Hôm qua") || timeStr.includes("1 ngày trước")) {
+      notiDate = new Date(todayStart - 24 * 3600 * 1000);
+    } else if (timeStr.includes("2 ngày trước")) {
+      notiDate = new Date(todayStart - 2 * 24 * 3600 * 1000);
+    } else if (timeStr.includes("3 ngày trước")) {
+      notiDate = new Date(todayStart - 3 * 24 * 3600 * 1000);
+    } else if (timeStr.includes("7 ngày trước") || timeStr.includes("1 tuần trước")) {
+      notiDate = new Date(todayStart - 7 * 24 * 3600 * 1000);
+    }
+
+    const notiTime = notiDate.getTime();
+
+    if (timeFilter === "TODAY") {
+      return notiTime >= todayStart;
+    }
+
+    if (timeFilter === "LAST_7_DAYS") {
+      const sevenDaysAgo = todayStart - 7 * 24 * 3600 * 1000;
+      return notiTime >= sevenDaysAgo;
+    }
+
+    if (timeFilter === "LAST_30_DAYS") {
+      const thirtyDaysAgo = todayStart - 30 * 24 * 3600 * 1000;
+      return notiTime >= thirtyDaysAgo;
+    }
+
+    if (timeFilter === "CUSTOM") {
+      if (!customStart && !customEnd) return true;
+      if (customStart) {
+        const start = new Date(customStart).getTime();
+        if (notiTime < start) return false;
+      }
+      if (customEnd) {
+        const end = new Date(customEnd).getTime() + 24 * 3600 * 1000 - 1;
+        if (notiTime > end) return false;
+      }
+      return true;
+    }
+
+    return true;
+  };
+
+  const actionNeededCount = allNotifications.filter(isNotificationActionNeeded).length;
+  const unreadCount = allNotifications.filter((n) => !n.isRead).length;
+
+  const quickFilterTabs: { id: QuickFilterTab; label: string }[] = [
     { id: "all", label: "Tất cả" },
-    { id: "briefing", label: "Bảng tin" },
-    { id: "system", label: "Hệ thống" },
-    { id: "task", label: "Công việc" },
-    { id: "approval", label: "Phê duyệt" },
+    { id: "action_needed", label: `Cần xử lý (${actionNeededCount})` },
+    { id: "unread", label: `Chưa đọc (${unreadCount})` },
   ];
 
-  const filtered = allNotifications.filter(
-    (n) => activeTab === "all" || n.type === activeTab,
-  ).sort((a, b) => {
-    // Put urgent unacknowledged briefings first
-    if (a.isUrgent && !a.isAcknowledged && !(b.isUrgent && !b.isAcknowledged)) return -1;
-    if (!(a.isUrgent && !a.isAcknowledged) && b.isUrgent && !b.isAcknowledged) return 1;
+  const activeAdvancedCount = [
+    appliedFilters.type !== "ALL",
+    appliedFilters.processingStatus !== "ALL",
+    appliedFilters.readStatus !== "ALL",
+    appliedFilters.time !== "ALL",
+  ].filter(Boolean).length;
+
+  const filtered = allNotifications.filter((n) => {
+    // 1. Search Query filter (matches title, ticketId, shiftId, shift name, store name, message, business context)
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const titleMatch = n.title?.toLowerCase().includes(q);
+      const messageMatch = n.message?.toLowerCase().includes(q);
+      const ticketMatch = n.ticketId?.toLowerCase().includes(q);
+      const shiftMatch = n.shiftId?.toLowerCase().includes(q);
+      const storeMatch = n.storeName?.toLowerCase().includes(q);
+      
+      const bContext = getNotificationBusinessContext(n)?.toLowerCase() || "";
+      const contextMatch = bContext.includes(q);
+
+      if (!titleMatch && !messageMatch && !ticketMatch && !shiftMatch && !storeMatch && !contextMatch) {
+        return false;
+      }
+    }
+
+    // 2. Quick Filters
+    if (activeTab === "action_needed") {
+      if (!isNotificationActionNeeded(n)) return false;
+    } else if (activeTab === "unread") {
+      if (n.isRead) return false;
+    }
+
+    // 3. Advanced: Loại thông báo
+    if (appliedFilters.type !== "ALL") {
+      if (getNotificationCategory(n) !== appliedFilters.type) return false;
+    }
+
+    // 4. Advanced: Trạng thái xử lý
+    if (appliedFilters.processingStatus !== "ALL") {
+      const isAction = isNotificationActionNeeded(n);
+      if (appliedFilters.processingStatus === "ACTION_NEEDED" && !isAction) return false;
+      if (appliedFilters.processingStatus === "PROCESSED" && isAction) return false;
+    }
+
+    // 5. Advanced: Trạng thái đọc
+    if (appliedFilters.readStatus !== "ALL") {
+      if (appliedFilters.readStatus === "UNREAD" && n.isRead) return false;
+      if (appliedFilters.readStatus === "READ" && !n.isRead) return false;
+    }
+
+    // 6. Advanced: Thời gian
+    if (appliedFilters.time !== "ALL") {
+      if (!isNotificationInTimeRange(n, appliedFilters.time, appliedFilters.customStartDate, appliedFilters.customEndDate)) {
+        return false;
+      }
+    }
+
+    return true;
+  }).sort((a, b) => {
+    // Put actionable items first
+    const aAction = isNotificationActionNeeded(a);
+    const bAction = isNotificationActionNeeded(b);
+    if (aAction && !bAction) return -1;
+    if (!aAction && bAction) return 1;
     return 0;
   });
+
+  const getEmptyStateContent = () => {
+    // Priority 1: Search query has no results
+    if (searchQuery.trim()) {
+      return {
+        title: "Không tìm thấy thông báo phù hợp.",
+        subtitle: `Không có kết quả nào khớp với từ khóa "${searchQuery.trim()}".`,
+      };
+    }
+
+    // Priority 2: Advanced Filters active with no results
+    if (activeAdvancedCount > 0) {
+      return {
+        title: "Không có thông báo phù hợp với bộ lọc hiện tại.",
+        subtitle: "Thử điều chỉnh hoặc xóa bớt tiêu chí lọc nâng cao.",
+      };
+    }
+
+    // Priority 3: Quick Filter "Cần xử lý"
+    if (activeTab === "action_needed") {
+      return {
+        title: "Không có thông báo nào cần bạn xử lý.",
+        subtitle: "Tất cả yêu cầu và đầu việc hiện tại đã được giải quyết.",
+      };
+    }
+
+    // Priority 4: Quick Filter "Chưa đọc"
+    if (activeTab === "unread") {
+      return {
+        title: "Bạn đã đọc tất cả thông báo.",
+        subtitle: "Không còn thông báo mới chưa đọc nào.",
+      };
+    }
+
+    // Priority 5: Default empty
+    return {
+      title: "Không có thông báo nào.",
+      subtitle: "Hộp thư thông báo của bạn đang trống.",
+    };
+  };
+
+  type ChronoGroup = "HÔM NAY" | "HÔM QUA" | "TRƯỚC ĐÓ";
+
+  const getNotificationChronoGroup = (n: NotificationProps): ChronoGroup => {
+    const timeStr = (n.time || "").toLowerCase();
+    if (
+      timeStr.includes("phút") ||
+      timeStr.includes("giờ") ||
+      timeStr.includes("vừa xong") ||
+      timeStr.includes("vài giây") ||
+      timeStr.includes("hôm nay") ||
+      timeStr.includes("cần xác nhận")
+    ) {
+      return "HÔM NAY";
+    }
+
+    if (
+      timeStr.includes("hôm qua") ||
+      timeStr.includes("1 ngày trước")
+    ) {
+      return "HÔM QUA";
+    }
+
+    return "TRƯỚC ĐÓ";
+  };
+
+  const rawGrouped: { group: ChronoGroup; items: NotificationProps[] }[] = [
+    {
+      group: "HÔM NAY",
+      items: filtered.filter((n) => getNotificationChronoGroup(n) === "HÔM NAY"),
+    },
+    {
+      group: "HÔM QUA",
+      items: filtered.filter((n) => getNotificationChronoGroup(n) === "HÔM QUA"),
+    },
+    {
+      group: "TRƯỚC ĐÓ",
+      items: filtered.filter((n) => getNotificationChronoGroup(n) === "TRƯỚC ĐÓ"),
+    },
+  ];
+  const groupedNotifications = rawGrouped.filter((g) => g.items.length > 0);
 
   const getIcon = (type: NotificationType, isUrgent?: boolean) => {
     if (type === "briefing") {
@@ -810,8 +1400,9 @@ export default function Notifications() {
   return (
     <div className="mobile-container bg-background flex flex-col h-screen">
       {/* Header */}
-      <div className="bg-white px-4 py-3 sticky top-0 z-30 shadow-sm border-b-2 border-gray-100 flex flex-col">
-        <div className="flex items-center justify-between mb-4 pt-safe">
+      <div className="bg-white px-4 py-3 sticky top-0 z-30 shadow-sm border-b-2 border-gray-100 flex flex-col gap-3">
+        {/* Top Header Row */}
+        <div className="flex items-center justify-between pt-safe">
           <div className="flex items-center">
             <button
               onClick={() => navigate(-1)}
@@ -822,35 +1413,84 @@ export default function Notifications() {
             <h1 className="text-xl font-bold text-gray-900 ml-1">Thông báo</h1>
           </div>
           <button
-            onClick={handleMarkAllAsRead}
-            className="text-xs font-bold text-primary uppercase tracking-wide hover:underline"
+            onClick={() => {
+              if (unreadCount > 0) {
+                setShowMarkAllConfirm(true);
+              }
+            }}
+            disabled={unreadCount === 0}
+            className={cn(
+              "text-xs font-bold uppercase tracking-wide transition-all",
+              unreadCount > 0
+                ? "text-primary hover:underline cursor-pointer"
+                : "text-gray-300 cursor-not-allowed",
+            )}
           >
             Đọc tất cả
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-          {tabs.map((tab) => (
+        {/* Compact Search Bar */}
+        <div className="relative">
+          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Tìm thông báo..."
+            className="w-full pl-9 pr-8 py-2 text-xs font-medium bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-primary focus:bg-white transition-all text-gray-900 placeholder:text-gray-400"
+          />
+          {searchQuery && (
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border-2 uppercase tracking-wide flex items-center gap-1.5",
-                activeTab === tab.id
-                  ? "bg-primary text-white border-primary shadow-sm"
-                  : "bg-white text-gray-500 border-gray-100 hover:border-gray-200 hover:text-gray-900",
-              )}
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded-full"
             >
-              {tab.label}
-              {tab.id === "all" && allNotifications.some((n) => !n.isRead) ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500 line-block"></span>
-              ) : null}
-              {tab.id === "briefing" && allNotifications.some(n => n.type === "briefing" && !n.isRead) ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500 line-block"></span>
-              ) : null}
+              <X className="w-3.5 h-3.5" />
             </button>
-          ))}
+          )}
+        </div>
+
+        {/* Quick Filters + Compact Filter Button */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 flex gap-2 overflow-x-auto no-scrollbar pb-0.5">
+            {quickFilterTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  "px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border-2 uppercase tracking-wide flex items-center gap-1.5 shrink-0",
+                  activeTab === tab.id
+                    ? "bg-primary text-white border-primary shadow-sm"
+                    : "bg-white text-gray-500 border-gray-100 hover:border-gray-200 hover:text-gray-900",
+                )}
+              >
+                {tab.label}
+                {tab.id === "all" && unreadCount > 0 ? (
+                  <span className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    activeTab === "all" ? "bg-white" : "bg-red-500"
+                  )}></span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => {
+              setTempFilters(appliedFilters);
+              setIsFilterOpen(true);
+            }}
+            className={cn(
+              "px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border-2 flex items-center gap-1.5 shrink-0 shadow-sm",
+              activeAdvancedCount > 0
+                ? "bg-primary/10 text-primary border-primary/30 hover:bg-primary/20"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-300 hover:text-gray-900"
+            )}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span>{activeAdvancedCount > 0 ? `Bộ lọc (${activeAdvancedCount})` : "Bộ lọc"}</span>
+          </button>
         </div>
       </div>
 
@@ -862,158 +1502,267 @@ export default function Notifications() {
       />
 
       <div className="flex-1 overflow-y-auto w-full bg-gray-50/50">
-        {filtered.length > 0 ? (
-          <div className="p-4 space-y-3">
-            {filtered.map((notification) => (
-              <div
-                key={notification.id}
-                onClick={() => {
-                  handleMarkAsRead(notification.id, notification.type);
+        {groupedNotifications.length > 0 ? (
+          <div className="p-4 space-y-5">
+            {groupedNotifications.map(({ group, items }) => (
+              <div key={group} className="space-y-2.5">
+                {/* Compact Section Header */}
+                <div className="flex items-center gap-2 px-1 pt-1">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-gray-500">
+                    {group}
+                  </span>
+                  <div className="flex-1 h-[1px] bg-gray-200/80" />
+                </div>
 
-                  const group = notification.notificationGroup || (
-                    notification.type === "briefing"
-                      ? "SHIFT_BRIEFING"
-                      : notification.ticketId
-                        ? "TICKET"
-                        : notification.shiftId
-                          ? "SHIFT"
-                          : null
-                  );
+                {/* Items in Chrono Group */}
+                <div className="space-y-2.5">
+                  {items.map((notification) => {
+                    const statusBadge = getNotificationBusinessStatus(notification);
+                    const businessContext = getNotificationBusinessContext(notification);
 
-                  if (group === "SHIFT_BRIEFING" || notification.type === "briefing") {
-                    const targetBriefingId = notification.briefingId || notification.id;
-                    const exists = briefings.some(b => b.id === targetBriefingId);
-                    if (exists) {
-                      setSelectedBriefingId(targetBriefingId);
-                      if (qaNotificationScenario?.category === "SHIFT_BRIEFING") {
-                        setQaDiagnosticResult({
-                          scenarioId: qaNotificationScenario.id,
-                          timestamp: new Date(),
-                          status: "PASS",
-                          details: `Đã mở bản tin [${targetBriefingId}] tại chỗ trong modal Thông báo.`,
-                          locatedEntityId: targetBriefingId,
-                        });
-                      }
-                    } else {
-                      setToastMessage("Bản tin đầu ca không còn tồn tại.");
-                    }
-                    return;
-                  }
+                    return (
+                      <div
+                        key={notification.id}
+                        onClick={() => {
+                          handleMarkAsRead(notification.id, notification.type);
 
-                  if (group === "TICKET" || notification.ticketId) {
-                    const targetTicketId = notification.ticketId;
-                    if (!targetTicketId) {
-                      setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
-                      if (qaNotificationScenario?.id === "QA-18") {
-                        setQaDiagnosticResult({
-                          scenarioId: "QA-18",
-                          timestamp: new Date(),
-                          status: "PASS",
-                          details: "Phòng thủ an toàn: targetEntityId = null không bị crash hay chuyển trang ngẫu nhiên.",
-                        });
-                      }
-                      return;
-                    }
-                    navigate(`/requests?ticketId=${targetTicketId}`);
-                    return;
-                  }
+                          const group = notification.notificationGroup || (
+                            notification.type === "briefing"
+                              ? "SHIFT_BRIEFING"
+                              : notification.ticketId
+                                ? "TICKET"
+                                : notification.shiftId
+                                  ? "SHIFT"
+                                  : null
+                          );
 
-                  if (group === "SHIFT" || notification.shiftId) {
-                    const targetShiftId = notification.shiftId;
-                    if (!targetShiftId) {
-                      setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
-                      return;
-                    }
-                    const foundShift = availableShifts.find(s => s.id === targetShiftId);
-                    if (foundShift) {
-                      const shiftDate = foundShift.date instanceof Date 
-                        ? foundShift.date.toISOString().split("T")[0] 
-                        : String(foundShift.date);
-                      navigate(`/schedule?shiftId=${targetShiftId}&date=${shiftDate}`);
-                    } else {
-                      navigate(`/schedule?shiftId=${targetShiftId}`);
-                    }
-                    return;
-                  }
+                          if (group === "SHIFT_BRIEFING" || notification.type === "briefing") {
+                            const targetBriefingId = notification.briefingId || notification.id;
+                            const exists = briefings.some(b => b.id === targetBriefingId);
+                            if (exists) {
+                              setSelectedBriefingId(targetBriefingId);
+                              if (qaNotificationScenario?.category === "SHIFT_BRIEFING") {
+                                setQaDiagnosticResult({
+                                  scenarioId: qaNotificationScenario.id,
+                                  timestamp: new Date(),
+                                  status: "PASS",
+                                  details: `Đã mở bản tin [${targetBriefingId}] tại chỗ trong modal Thông báo.`,
+                                  locatedEntityId: targetBriefingId,
+                                });
+                              }
+                            } else {
+                              setToastMessage("Bản tin đầu ca không còn tồn tại.");
+                            }
+                            return;
+                          }
 
-                  if (notification.navigateUrl) {
-                    navigate(notification.navigateUrl);
-                  }
-                }}
-                className={cn(
-                  "p-4 bg-white border-2 rounded-xl transition-all cursor-pointer active:scale-[0.98] shadow-sm relative overflow-hidden",
-                  !notification.isRead
-                    ? (notification.isUrgent && !notification.isAcknowledged ? "border-orange-300 shadow-md bg-orange-50/20" : "border-primary/30 shadow-md")
-                    : "border-gray-100 opacity-80",
-                )}
-              >
-                {!notification.isRead && (
-                  <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full m-3 blur-[2px]"></div>
-                )}
-                <div className="flex gap-3">
-                  <div className="relative shrink-0">
-                    <div
-                      className={cn(
-                        "w-10 h-10 rounded-full flex items-center justify-center border-2",
-                        getBg(notification.type, notification.isUrgent),
-                      )}
-                    >
-                      {getIcon(notification.type, notification.isUrgent)}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 pt-0.5">
-                    <div className="flex justify-between items-start mb-1.5 gap-2">
-                      <h3
+                          if (group === "TICKET" || notification.ticketId) {
+                            const targetTicketId = notification.ticketId;
+                            if (!targetTicketId) {
+                              setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+                              if (qaNotificationScenario?.id === "QA-18") {
+                                setQaDiagnosticResult({
+                                  scenarioId: "QA-18",
+                                  timestamp: new Date(),
+                                  status: "PASS",
+                                  details: "Phòng thủ an toàn: targetEntityId = null không bị crash hay chuyển trang ngẫu nhiên.",
+                                });
+                              }
+                              return;
+                            }
+                            navigate(`/requests?ticketId=${targetTicketId}`);
+                            return;
+                          }
+
+                          if (group === "SHIFT" || notification.shiftId) {
+                            const targetShiftId = notification.shiftId;
+                            if (!targetShiftId) {
+                              setToastMessage("Không thể mở nội dung liên quan của thông báo này.");
+                              return;
+                            }
+                            const foundShift = availableShifts.find(s => s.id === targetShiftId);
+                            if (foundShift) {
+                              const shiftDate = foundShift.date instanceof Date 
+                                ? foundShift.date.toISOString().split("T")[0] 
+                                : String(foundShift.date);
+                              navigate(`/schedule?shiftId=${targetShiftId}&date=${shiftDate}`);
+                            } else {
+                              navigate(`/schedule?shiftId=${targetShiftId}`);
+                            }
+                            return;
+                          }
+
+                          if (notification.navigateUrl) {
+                            navigate(notification.navigateUrl);
+                          }
+                        }}
                         className={cn(
-                          "text-sm tracking-tight leading-snug break-words",
+                          "p-3.5 bg-white border rounded-2xl transition-all cursor-pointer active:scale-[0.98] shadow-sm relative overflow-hidden",
                           !notification.isRead
-                            ? "font-bold text-gray-900"
-                            : "font-semibold text-gray-500",
+                            ? "border-primary/30 bg-white ring-1 ring-primary/10"
+                            : "border-gray-200/80 bg-white hover:border-gray-300 opacity-95",
                         )}
                       >
-                        {notification.title}
-                      </h3>
-                      <span className={cn(
-                        "text-[10px] font-bold uppercase tracking-wider shrink-0 whitespace-nowrap pt-0.5 border px-1.5 py-0.5 rounded-md",
-                        notification.isUrgent && !notification.isAcknowledged ? "bg-orange-100 text-orange-700 border-orange-200" : "bg-gray-50 text-gray-400 border-gray-100"
-                      )}>
-                        {notification.time}
-                      </span>
-                    </div>
-                    {notification.storeName && (
-                      <p className="text-[10px] font-bold text-primary mb-1 uppercase tracking-wide">
-                         {notification.storeName}
-                      </p>
-                    )}
-                    <p
-                      className={cn(
-                        "text-xs leading-relaxed max-w-[280px]",
-                        !notification.isRead
-                          ? "text-gray-600 font-medium"
-                          : "text-gray-400 font-medium",
-                      )}
-                    >
-                      {notification.message}
-                    </p>
-                  </div>
+                        <div className="flex gap-3 items-start">
+                          {/* Leading Category / Type Icon */}
+                          <div className="relative shrink-0 pt-0.5">
+                            <div
+                              className={cn(
+                                "w-9 h-9 rounded-xl flex items-center justify-center border",
+                                getBg(notification.type, notification.isUrgent && !notification.isAcknowledged),
+                              )}
+                            >
+                              {getIcon(notification.type, notification.isUrgent && !notification.isAcknowledged)}
+                            </div>
+                          </div>
+
+                          {/* Content Column */}
+                          <div className="flex-1 min-w-0">
+                            {/* Top Line: Title + Status Badge */}
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <h3
+                                className={cn(
+                                  "text-sm tracking-tight leading-snug break-words flex-1",
+                                  !notification.isRead
+                                    ? "font-bold text-gray-900"
+                                    : "font-semibold text-gray-700",
+                                )}
+                              >
+                                {notification.title}
+                              </h3>
+
+                              {/* Current Business Status Badge */}
+                              {statusBadge && (
+                                <span
+                                  className={cn(
+                                    "text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border shrink-0 whitespace-nowrap",
+                                    statusBadge.badgeClass
+                                  )}
+                                >
+                                  {statusBadge.label}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Business Context Line */}
+                            {businessContext && (
+                              <p className="text-[11px] font-semibold text-slate-500 mb-1 flex items-center gap-1">
+                                <span>{businessContext}</span>
+                              </p>
+                            )}
+
+                            {/* Short Body Preview (2-3 lines with ellipsis) */}
+                            <p
+                              className={cn(
+                                "text-xs leading-relaxed line-clamp-2",
+                                !notification.isRead ? "text-gray-600 font-normal" : "text-gray-500 font-normal",
+                              )}
+                            >
+                              {notification.message}
+                            </p>
+
+                            {/* Card Footer: Timestamp + Crisp Unread Dot */}
+                            <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-gray-100/90">
+                              <span className="text-[11px] font-medium text-gray-400">
+                                {notification.time}
+                              </span>
+
+                              {/* Small crisp unread indicator (no aggressive red blur) */}
+                              {!notification.isRead && (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-bold text-primary">Mới</span>
+                                  <span className="w-2 h-2 rounded-full bg-primary shrink-0" />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-            <div className="w-24 h-24 bg-white border-2 border-dashed border-gray-200 rounded-full flex items-center justify-center mb-4 shadow-sm">
-              <Bell className="w-10 h-10 text-gray-300" />
-            </div>
-            <p className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-              Không có thông báo nào
-            </p>
-            <p className="text-gray-500 text-xs mt-1.5 font-medium">
-              Góc làm việc của bạn đang rất gọn gàng!
-            </p>
-          </div>
+          (() => {
+            const emptyContent = getEmptyStateContent();
+            return (
+              <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
+                <div className="w-20 h-20 bg-white border-2 border-dashed border-gray-200 rounded-2xl flex items-center justify-center mb-4 shadow-sm">
+                  {searchQuery.trim() ? (
+                    <Search className="w-8 h-8 text-gray-300" />
+                  ) : activeAdvancedCount > 0 ? (
+                    <SlidersHorizontal className="w-8 h-8 text-gray-300" />
+                  ) : (
+                    <Bell className="w-8 h-8 text-gray-300" />
+                  )}
+                </div>
+                <p className="text-sm font-bold text-gray-900 tracking-tight">
+                  {emptyContent.title}
+                </p>
+                <p className="text-gray-500 text-xs mt-1.5 font-normal max-w-[280px]">
+                  {emptyContent.subtitle}
+                </p>
+
+                {searchQuery.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="mt-4 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  >
+                    Xóa tìm kiếm
+                  </button>
+                )}
+              </div>
+            );
+          })()
         )}
       </div>
+
+      {/* Confirmation Modal for Read All */}
+      <AnimatePresence>
+        {showMarkAllConfirm && (
+          <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-gray-100"
+            >
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center mb-3 text-primary">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-gray-900 mb-1.5">
+                Đánh dấu tất cả thông báo là đã đọc?
+              </h3>
+              <p className="text-xs text-gray-500 leading-relaxed mb-5">
+                Thao tác này chỉ cập nhật trạng thái đọc của thông báo và không làm thay đổi trạng thái xử lý của công việc, ticket hay ca làm việc.
+              </p>
+              <div className="flex gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowMarkAllConfirm(false)}
+                  className="flex-1 py-2.5 px-3 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50 uppercase tracking-wider transition-colors"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleMarkAllAsRead();
+                    setShowMarkAllConfirm(false);
+                    setToastMessage("Đã đánh dấu tất cả thông báo là đã đọc");
+                  }}
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-primary text-white text-xs font-bold hover:bg-primary/90 shadow-sm uppercase tracking-wider transition-all active:scale-[0.98]"
+                >
+                  Đánh dấu đã đọc
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Floating Toast Message */}
       <AnimatePresence>
@@ -1159,6 +1908,217 @@ export default function Notifications() {
                </motion.div>
              );
           })()
+        )}
+      </AnimatePresence>
+      {/* Advanced Filter Bottom Sheet */}
+      <AnimatePresence>
+        {isFilterOpen && (
+          <div className="fixed inset-0 z-50 flex items-end justify-center">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsFilterOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+            />
+
+            {/* Modal Sheet */}
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 28, stiffness: 300 }}
+              className="relative w-full max-w-md bg-white rounded-t-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] z-10"
+            >
+              {/* Drag Handle & Header */}
+              <div className="p-4 pb-3 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <SlidersHorizontal className="w-5 h-5 text-primary" />
+                  <h2 className="text-base font-bold text-gray-900">Bộ lọc thông báo</h2>
+                </div>
+                <button
+                  onClick={() => setIsFilterOpen(false)}
+                  className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 hover:bg-gray-200 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Scrollable Filter Sections */}
+              <div className="p-4 overflow-y-auto space-y-5 flex-1 divide-y divide-gray-100">
+                {/* 1. Loại thông báo */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block">
+                    Loại thông báo
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "ALL", label: "Tất cả" },
+                      { id: "TICKET", label: "Ticket" },
+                      { id: "SHIFT", label: "Ca làm việc" },
+                      { id: "SHIFT_BRIEFING", label: "Shift Briefing" },
+                      { id: "SYSTEM", label: "Hệ thống" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setTempFilters(prev => ({ ...prev, type: opt.id as NotificationTypeFilter }))}
+                        className={cn(
+                          "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                          tempFilters.type === opt.id
+                            ? "bg-primary text-white border-primary shadow-sm"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Trạng thái xử lý */}
+                <div className="pt-4 space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block">
+                    Trạng thái xử lý
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "ALL", label: "Tất cả" },
+                      { id: "ACTION_NEEDED", label: "Cần xử lý" },
+                      { id: "PROCESSED", label: "Đã xử lý" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setTempFilters(prev => ({ ...prev, processingStatus: opt.id as ProcessingStatusFilter }))}
+                        className={cn(
+                          "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                          tempFilters.processingStatus === opt.id
+                            ? "bg-primary text-white border-primary shadow-sm"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. Trạng thái đọc */}
+                <div className="pt-4 space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block">
+                    Trạng thái đọc
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "ALL", label: "Tất cả" },
+                      { id: "UNREAD", label: "Chưa đọc" },
+                      { id: "READ", label: "Đã đọc" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setTempFilters(prev => ({ ...prev, readStatus: opt.id as ReadStatusFilter }))}
+                        className={cn(
+                          "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                          tempFilters.readStatus === opt.id
+                            ? "bg-primary text-white border-primary shadow-sm"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. Thời gian */}
+                <div className="pt-4 space-y-2">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block">
+                    Thời gian
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "ALL", label: "Tất cả" },
+                      { id: "TODAY", label: "Hôm nay" },
+                      { id: "LAST_7_DAYS", label: "7 ngày gần nhất" },
+                      { id: "LAST_30_DAYS", label: "30 ngày gần nhất" },
+                      { id: "CUSTOM", label: "Tùy chỉnh" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setTempFilters(prev => ({ ...prev, time: opt.id as TimeFilter }))}
+                        className={cn(
+                          "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                          tempFilters.time === opt.id
+                            ? "bg-primary text-white border-primary shadow-sm"
+                            : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Custom Date Range Picker (shown ONLY when Tùy chỉnh is selected) */}
+                  {tempFilters.time === "CUSTOM" && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="pt-3 grid grid-cols-2 gap-3"
+                    >
+                      <div>
+                        <label className="text-[11px] font-bold text-gray-500 mb-1 block">Từ ngày</label>
+                        <div className="relative">
+                          <input
+                            type="date"
+                            value={tempFilters.customStartDate || ""}
+                            onChange={(e) => setTempFilters(prev => ({ ...prev, customStartDate: e.target.value }))}
+                            className="w-full text-xs font-medium px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-primary text-gray-900"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-gray-500 mb-1 block">Đến ngày</label>
+                        <div className="relative">
+                          <input
+                            type="date"
+                            value={tempFilters.customEndDate || ""}
+                            onChange={(e) => setTempFilters(prev => ({ ...prev, customEndDate: e.target.value }))}
+                            className="w-full text-xs font-medium px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-primary text-gray-900"
+                          />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sheet Footer Actions */}
+              <div className="p-4 border-t border-gray-100 bg-gray-50/80 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setTempFilters(DEFAULT_ADVANCED_FILTERS)}
+                  className="flex-1 py-3 px-4 rounded-xl text-xs font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 hover:text-gray-900 transition-colors uppercase tracking-wider text-center"
+                >
+                  Xóa bộ lọc
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAppliedFilters(tempFilters);
+                    setIsFilterOpen(false);
+                  }}
+                  className="flex-1 py-3 px-4 rounded-xl text-xs font-bold text-white bg-primary hover:bg-primary/90 transition-all shadow-md active:scale-[0.98] uppercase tracking-wider text-center"
+                >
+                  Áp dụng
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
