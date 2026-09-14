@@ -69,154 +69,169 @@ interface NotificationProps {
 }
 
 const mockNotifications: NotificationProps[] = [
-  {
-    id: "lr-noti-1",
-    type: "approval",
-    title: "Đơn nghỉ phép đã được gửi",
-    message: "Đơn nghỉ phép của bạn đã được hệ thống ghi nhận. Phản hồi sẽ sớm được cập nhật.",
-    time: "2 giờ trước",
-    isRead: false,
-    notificationGroup: "TICKET",
-    ticketId: "LR-001",
-  },
-  {
-    id: "lr-noti-2",
-    type: "approval",
-    title: "Đơn nghỉ phép LR-002 đã được duyệt",
-    message: "Đơn nghỉ phép tuần trước của bạn đã được duyệt.",
-    time: "1 ngày trước",
-    isRead: true,
-    notificationGroup: "TICKET",
-    ticketId: "LR-002",
-  },
-  {
-    id: "lr-noti-3",
-    type: "approval",
-    title: "Đơn nghỉ phép LR-003 đã bị từ chối",
-    message: "Đơn nghỉ phép của bạn bị từ chối. Lý do: Cửa hàng đang thiếu nhân sự trong ca này.",
-    time: "2 ngày trước",
-    isRead: true,
-    notificationGroup: "TICKET",
-    ticketId: "LR-003",
-  },
+  // --- NHÓM 1: HÔM NAY ---
+  // A. Unread = true | Action Needed = true (Ticket cần bổ sung check-out)
   {
     id: "app-1",
     type: "approval",
     title: "Cần xử lý: Bổ sung Check-out",
-    message:
-      "Ticket của bạn (Ca Sáng, 30/07) chưa có dữ liệu check-out. Vui lòng kiểm tra và xử lý bổ sung công.",
+    message: "Ticket của bạn (Ca Sáng, 30/07) chưa có dữ liệu check-out. Vui lòng kiểm tra và xử lý bổ sung công.",
     time: "2 phút trước",
     isRead: false,
     notificationGroup: "TICKET",
     ticketId: "TK-OUT-032",
   },
+  // B. Unread = false | Action Needed = true (Ticket cần xử lý nhưng nhân viên đã đọc tin báo)
   {
     id: "app-2",
     type: "approval",
     title: "Cần xử lý: Bổ sung Check-in",
-    message:
-      "Hệ thống không ghi nhận giờ Check-in ca sáng (21/05). Vui lòng xử lý giải trình.",
-    time: "10 phút trước",
-    isRead: false,
+    message: "Hệ thống không ghi nhận giờ Check-in ca sáng (21/05). Vui lòng xử lý giải trình công.",
+    time: "15 phút trước",
+    isRead: true,
     notificationGroup: "TICKET",
     ticketId: "TK-IN-017",
   },
+  // C. Unread = true | Action Needed = false (Shift mới xếp - Đã xử lý / Chỉ thông tin)
+  {
+    id: "shift-new-01",
+    type: "system",
+    title: "Lịch làm việc ca mới đã được xếp!",
+    message: "Bạn có ca làm việc mới tại HMK Nguyễn Trãi (Ca Sáng 08:00 - 15:00). Vui lòng kiểm tra lịch cá nhân.",
+    time: "1 giờ trước",
+    isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "case_approved_today",
+  },
+  // D. Unread = false | Action Needed = false (Ticket đã gửi đi, đang chờ duyệt)
+  {
+    id: "lr-noti-1",
+    type: "approval",
+    title: "Đơn nghỉ phép đã được gửi",
+    message: "Đơn nghỉ phép của bạn đã được hệ thống ghi nhận và chuyển quản lý phê duyệt.",
+    time: "2 giờ trước",
+    isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "LR-001",
+  },
+  // C. Unread = true | Action Needed = false (Ca làm việc bị hủy / Smart Overlap)
   {
     id: "ns-1",
     type: "system",
     title: "Ca làm việc đã bị tước (No-show)",
-    message:
-      "Quản lý đã Handshake thay thế nhân sự cho Ca Chiều (Hôm nay) do bạn No-show quá hạn. Ca này đã bị Hủy trong Lịch làm việc của bạn.",
-    time: "Vài giây trước",
+    message: "Quản lý đã Handshake thay thế nhân sự cho Ca Chiều do bạn No-show quá hạn. Ca này đã bị Hủy trong Lịch.",
+    time: "3 giờ trước",
     isRead: false,
     notificationGroup: "SHIFT",
     shiftId: "case_cancelled_today",
   },
+  // C. Unread = true | Action Needed = false (Thông báo hệ thống chưa đọc)
   {
-    id: "sys-1",
+    id: "sys-maintenance-1",
     type: "system",
-    title: "Tự động gọt giờ (Smart Overlap)",
-    message:
-      "[Xung đột Lịch] Hệ thống tự động cấn trừ 30 phút (Travel Time) ca Sáng do bạn có ca Tối liền kề lúc 15:00 tại Cầu Giấy.",
-    time: "5 phút trước",
+    title: "Thông báo hệ thống",
+    message: "Hệ thống HRM sẽ thực hiện nâng cấp định kỳ từ 23:00 đến 01:00 sáng mai.",
+    time: "4 giờ trước",
     isRead: false,
-    notificationGroup: "SHIFT",
-    shiftId: "case_approved_today",
   },
+
+  // --- NHÓM 2: HÔM QUA ---
+  // A. Unread = true | Action Needed = true (Yêu cầu đổi ca từ đồng nghiệp cần xác nhận)
+  {
+    id: "swap-req-pending-unread",
+    type: "approval",
+    title: "Chờ xác nhận đổi ca",
+    message: "Nhân viên Minh Tuấn muốn đổi ca làm việc ngày mai với bạn. Vui lòng phản hồi trước khi ca bắt đầu.",
+    time: "Hôm qua",
+    isRead: false,
+    notificationGroup: "TICKET",
+    ticketId: "RQ-SWAP-02",
+  },
+  // D. Unread = false | Action Needed = false (Ticket đã được duyệt)
+  {
+    id: "lr-noti-2",
+    type: "approval",
+    title: "Đơn nghỉ phép LR-002 đã được duyệt",
+    message: "Đơn nghỉ phép của bạn đã được Quản lý phê duyệt thành công.",
+    time: "Hôm qua",
+    isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "LR-002",
+  },
+  // C. Unread = true | Action Needed = false (Ca điều động chi viện đã được phân công)
   {
     id: "sys-2",
     type: "system",
     title: "Phân công khẩn cấp (Chi viện Vận hành)",
-    message:
-      "Bạn được phân công vào ca làm việc tại HMK Cầu Giấy. Vui lòng kiểm tra chi tiết trong Lịch cá nhân.",
-    time: "20 phút trước",
+    message: "Bạn được phân công vào ca làm việc tại HMK Cầu Giấy. Vui lòng kiểm tra chi tiết trong Lịch cá nhân.",
+    time: "Hôm qua",
     isRead: false,
     notificationGroup: "SHIFT",
     shiftId: "case_approved_cg_today",
   },
+  // D. Unread = false | Action Needed = false (Thông báo chính sách hệ thống đã đọc)
   {
-    id: "0",
+    id: "policy-noti-1",
     type: "system",
-    title: "Lịch làm việc ca mới đã được xếp!",
-    message:
-      "Bạn có ca làm việc tại HMK Nguyễn Trãi (Ca Sáng). Vui lòng kiểm tra Lịch cá nhân.",
-    time: "1 giờ trước",
-    isRead: false,
-    notificationGroup: "SHIFT",
-    shiftId: "case_approved_today",
+    title: "Chính sách mới",
+    message: "Vui lòng đọc và xác nhận chính sách chấm công - đi trễ/về sớm phiên bản Q3/2026.",
+    time: "Hôm qua",
+    isRead: true,
   },
+  // D. Unread = false | Action Needed = false (Nhiệm vụ công việc hoàn thành)
   {
-    id: "1",
-    type: "system",
-    title: "Thông báo hệ thống",
-    message: "Hệ thống sẽ bảo trì từ 23:00 đến 02:00 sáng mai.",
-    time: "10 phút trước",
-    isRead: false,
-  },
-  {
-    id: "2",
+    id: "task-completed-1",
     type: "task",
-    title: "Bạn được giao công việc mới",
-    message: "Set up quầy kệ trưng bày sản phẩm mới. Hạn chót: 15:00 hôm nay.",
-    time: "1 giờ trước",
-    isRead: false,
+    title: "Công việc sắp đến hạn",
+    message: 'Công việc "kiểm kho cuối ngày" tại HMK Nguyễn Trãi.',
+    time: "Hôm qua",
+    isRead: true,
   },
+
+  // --- NHÓM 3: TRƯỚC ĐÓ ---
+  // B. Unread = false | Action Needed = true (Ticket giải trình vắng cả ca cần xử lý)
   {
-    id: "3",
+    id: "ticket-mb-301-read",
     type: "approval",
-    title: "Yêu cầu đổi ca được gửi",
-    message: "Yêu cầu đổi ca cho Ca Chiều đã được gửi đến quản lý.",
-    time: "2 giờ trước",
+    title: "Cần xử lý: Giải trình vắng ca (Missing Both)",
+    message: "Hệ thống ghi nhận ca làm việc ngày 02/08 chưa có dữ liệu chấm công. Vui lòng gửi giải trình hoặc yêu cầu nghỉ bù.",
+    time: "3 ngày trước",
+    isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "TK-MB-301",
+  },
+  // D. Unread = false | Action Needed = false (Ticket bị từ chối)
+  {
+    id: "lr-noti-3",
+    type: "approval",
+    title: "Đơn nghỉ phép LR-003 đã bị từ chối",
+    message: "Đơn nghỉ phép của bạn bị từ chối. Lý do: Cửa hàng đang thiếu nhân sự trong ca này.",
+    time: "3 ngày trước",
+    isRead: true,
+    notificationGroup: "TICKET",
+    ticketId: "LR-003",
+  },
+  // D. Unread = false | Action Needed = false (Yêu cầu đổi ca bị từ chối)
+  {
+    id: "swap-rejected-1",
+    type: "approval",
+    title: "Yêu cầu đổi ca RQ-SWAP-05 bị từ chối",
+    message: "Yêu cầu đổi ca cho Ca Chiều đã bị Quản lý từ chối do xung đột định mức nhân sự.",
+    time: "7 ngày trước",
     isRead: true,
     notificationGroup: "TICKET",
     ticketId: "RQ-SWAP-05",
   },
+  // C. Unread = true | Action Needed = false (Thông báo lịch tuần mới chưa đọc)
   {
-    id: "4",
+    id: "shift-outside-18",
     type: "system",
-    title: "Chính sách mới",
-    message: "Vui lòng đọc và xác nhận chính sách đi trễ/về sớm mới cập nhật.",
-    time: "Hôm qua",
-    isRead: true,
-  },
-  {
-    id: "5",
-    type: "task",
-    title: "Công việc sắp đến hạn",
-    message: 'Công việc "kiểm kho cuối ngày" còn 30 phút nữa đến hạn.',
-    time: "Hôm qua",
-    isRead: true,
-  },
-  {
-    id: "6",
-    type: "approval",
-    title: "Chờ duyệt đổi ca",
-    message:
-      "Nhân viên Minh Tuấn muốn đổi ca Chờ xác nhận của bạn. Xem trong tab Xử lý.",
-    time: "2 ngày trước",
-    isRead: true,
-    notificationGroup: "TICKET",
-    ticketId: "RQ-SWAP-02",
+    title: "Xếp lịch làm việc chi nhánh Cầu Giấy",
+    message: "Lịch làm việc ca Tối ngày 18/09 tại HMK Nguyễn Trãi đã được cập nhật vào lịch cá nhân.",
+    time: "7 ngày trước",
+    isRead: false,
+    notificationGroup: "SHIFT",
+    shiftId: "shift_outside_week_018",
   },
 ];
 
