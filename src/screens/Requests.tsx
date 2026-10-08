@@ -23,6 +23,7 @@ import {
   X,
   AlertTriangle,
   FastForward,
+  CalendarX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -171,6 +172,7 @@ export default function Requests() {
     togglePeriodLockForTicket,
     qaNotificationScenario,
     setQaDiagnosticResult,
+    shiftRegistrationCancelRequests,
   } = useApp();
   
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
@@ -678,11 +680,64 @@ export default function Requests() {
         originalTicket: att,
       };
     }),
+    ...(shiftRegistrationCancelRequests || []).map((src) => {
+      const relatedShift = availableShifts.find((s) => s.id === src.shiftId);
+      let mappedStatus = "pending-manager";
+      let statusLabel = "Chờ duyệt";
+      let color = "text-amber-500";
+
+      if (src.status === "PENDING") {
+        mappedStatus = "pending-manager";
+        statusLabel = "Chờ duyệt";
+        color = "text-amber-500";
+      } else if (src.status === "APPROVED") {
+        mappedStatus = "approved";
+        statusLabel = "Đã duyệt";
+        color = "text-green-500";
+      } else if (src.status === "REJECTED") {
+        mappedStatus = "rejected-manager";
+        statusLabel = "Đã từ chối";
+        color = "text-red-500";
+      } else if (src.status === "AUTO_REJECTED") {
+        mappedStatus = "auto-rejected";
+        statusLabel = "Tự động từ chối";
+        color = "text-purple-600";
+      }
+
+      return {
+        id: src.id,
+        type: "shift_cancel",
+        title: "Yêu cầu hủy đăng ký ca",
+        date: src.submittedAt instanceof Date ? format(src.submittedAt, "dd/MM/yyyy", { locale: vi }) : "N/A",
+        status: mappedStatus,
+        statusLabel: statusLabel,
+        icon: CalendarX,
+        color,
+        detail: {
+          reason: src.reason,
+          submittedAt: src.submittedAt instanceof Date ? format(src.submittedAt, "HH:mm, dd/MM/yyyy", { locale: vi }) : "N/A",
+          registrationId: src.registrationId,
+          shiftId: src.shiftId,
+          relatedShift,
+          requestedSkillTagId: src.requestedSkillTagId,
+          rawStatus: src.status,
+          managerNote: src.managerNote,
+          decidedAt: src.decidedAt instanceof Date ? format(src.decidedAt, "HH:mm, dd/MM/yyyy", { locale: vi }) : undefined,
+          decidedBy: src.decidedBy,
+          systemReason: src.systemReason,
+          branch: relatedShift?.storeName || user?.department || "HMK Nguyễn Trãi",
+        },
+        originalShiftCancelRequest: src,
+      };
+    }),
   ].sort((a, b) => {
-    if (a.type === "leave" && b.type === "leave" && a.originalRequest?.submittedAt instanceof Date && b.originalRequest?.submittedAt instanceof Date) {
-      return b.originalRequest.submittedAt.getTime() - a.originalRequest.submittedAt.getTime();
-    }
-    return 0;
+    const getTimestamp = (item: any) => {
+      if (item.originalRequest?.submittedAt instanceof Date) return item.originalRequest.submittedAt.getTime();
+      if (item.originalTicket?.submittedAt instanceof Date) return item.originalTicket.submittedAt.getTime();
+      if (item.originalShiftCancelRequest?.submittedAt instanceof Date) return item.originalShiftCancelRequest.submittedAt.getTime();
+      return 0;
+    };
+    return getTimestamp(b) - getTimestamp(a);
   });
 
   const renderStatus = (status: string, statusLabel?: string) => {
@@ -813,6 +868,8 @@ export default function Requests() {
     if (filterType === "all") return true;
     if (filterType === "leave") return req.type === "leave";
     if (filterType === "swap") return req.type === "swap";
+    if (filterType === "shift_cancel") return req.type === "shift_cancel";
+    if (filterType === "shift") return req.type === "shift_cancel" || req.type === "swap";
     if (filterType === "missing_both") return req.type === "missing_both";
     if (filterType === "forgot_in") return req.type === "forgot_in";
     if (filterType === "forgot_out") return req.type === "forgot_out";
@@ -1060,6 +1117,17 @@ export default function Requests() {
             >
               Nghỉ phép
             </button>
+            <button
+              onClick={() => setFilterType("shift_cancel")}
+              className={cn(
+                "px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg border transition-all whitespace-nowrap",
+                filterType === "shift_cancel"
+                  ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300",
+              )}
+            >
+              Hủy ca
+            </button>
           </div>
         </div>
       </div>
@@ -1160,10 +1228,10 @@ export default function Requests() {
                   <div
                   key={req.id}
                   id={`ticket-card-${req.id}`}
-                  onClick={() => (req.type === "leave" || req.type === "attendance_ticket") && setSelectedLeave(req)}
+                  onClick={() => (req.type === "leave" || req.type === "attendance_ticket" || req.type === "shift_cancel") && setSelectedLeave(req)}
                   className={cn(
                     "bg-white border-2 rounded-2xl p-4 shadow-sm transition-all relative overflow-hidden",
-                    (req.type === "leave" || req.type === "attendance_ticket") ? "cursor-pointer active:scale-[0.98] hover:border-gray-300" : "",
+                    (req.type === "leave" || req.type === "attendance_ticket" || req.type === "shift_cancel") ? "cursor-pointer active:scale-[0.98] hover:border-gray-300" : "",
                     highlightedTicketId === req.id && "locator-highlight",
                     req.type === "forgot_in" || req.type === "forgot_out"
                       ? "border-red-100 bg-red-50/10"
@@ -2103,7 +2171,7 @@ export default function Requests() {
                   <div className="flex justify-between items-start">
                     <div>
                       <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">
-                        {selectedLeave.type === "attendance_ticket" ? "Loại yêu cầu" : "Loại phép"}
+                        {selectedLeave.type === "shift_cancel" || selectedLeave.type === "attendance_ticket" ? "Loại yêu cầu" : "Loại phép"}
                       </span>
                       <p className="font-bold text-gray-900 text-sm">{selectedLeave.title}</p>
                     </div>
@@ -2120,12 +2188,42 @@ export default function Requests() {
 
                   <div>
                     <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">
-                      {selectedLeave.type === "attendance_ticket" ? "Ngày vắng mặt / làm việc" : "Thời gian nghỉ"}
+                      {selectedLeave.type === "shift_cancel" ? "Ngày gửi yêu cầu" : selectedLeave.type === "attendance_ticket" ? "Ngày vắng mặt / làm việc" : "Thời gian nghỉ"}
                     </span>
                     <p className="font-bold text-primary text-sm flex items-center gap-2">
                       <Clock className="w-4 h-4 text-primary" /> {selectedLeave.date}
                     </p>
                   </div>
+
+                  {selectedLeave.type === "shift_cancel" && (
+                    <>
+                      <div>
+                        <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Mã đăng ký ca</span>
+                        <span className="font-mono font-bold text-xs bg-slate-200/80 text-slate-800 px-2 py-1 rounded inline-block">
+                          {selectedLeave.detail.registrationId}
+                        </span>
+                      </div>
+
+                      <div>
+                        <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Ca làm việc yêu cầu hủy</span>
+                        {selectedLeave.detail.relatedShift ? (
+                          <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-slate-900 font-medium space-y-1">
+                            <p className="font-bold text-slate-900 text-sm">
+                              {selectedLeave.detail.relatedShift.shiftName} ({selectedLeave.detail.relatedShift.timeStr})
+                            </p>
+                            <p className="text-slate-600">
+                              🏬 {selectedLeave.detail.branch} • ⏱️ {selectedLeave.detail.relatedShift.hours} giờ
+                            </p>
+                            <p className="text-slate-600">
+                              🏷️ Vị trí / Kỹ năng: <span className="font-bold text-slate-800">{selectedLeave.detail.requestedSkillTagId || selectedLeave.detail.relatedShift.skillTag}</span>
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="font-medium text-gray-500 text-sm italic">Ca làm việc ID: {selectedLeave.detail.shiftId}</p>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   {selectedLeave.type === "attendance_ticket" && (
                     <>
@@ -2155,7 +2253,7 @@ export default function Requests() {
                     </>
                   )}
 
-                  {selectedLeave.type !== "attendance_ticket" && (
+                  {selectedLeave.type !== "attendance_ticket" && selectedLeave.type !== "shift_cancel" && (
                     <div>
                       <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Ca bị ảnh hưởng</span>
                       <p className="font-bold text-gray-800 text-xs mb-1.5">
@@ -2181,7 +2279,7 @@ export default function Requests() {
 
                   <div>
                     <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">
-                      {selectedLeave.type === "attendance_ticket" ? "Lý do giải trình" : "Lý do"}
+                      {selectedLeave.type === "attendance_ticket" ? "Lý do giải trình" : selectedLeave.type === "shift_cancel" ? "Lý do yêu cầu hủy" : "Lý do"}
                     </span>
                     <p className="font-medium text-gray-700 text-sm leading-relaxed">{selectedLeave.detail.reason}</p>
                   </div>
@@ -2196,6 +2294,75 @@ export default function Requests() {
                     </div>
                   )}
                 </div>
+
+                {/* --- SHIFT CANCEL SPECIFIC STATUS INFO --- */}
+                {selectedLeave.type === "shift_cancel" && (
+                  <div className="space-y-3">
+                    {selectedLeave.detail.rawStatus === "PENDING" && (
+                      <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs font-medium text-amber-900 space-y-1">
+                        <p className="font-bold flex items-center gap-1.5">
+                          <span>⏳</span> Đang chờ Quản lý xem xét
+                        </p>
+                        <p className="leading-relaxed text-amber-800">
+                          Yêu cầu đang chờ Quản lý phê duyệt. Đăng ký ca của bạn vẫn được giữ cho đến khi yêu cầu được duyệt.
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedLeave.detail.rawStatus === "APPROVED" && (
+                      <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-medium text-emerald-900 space-y-1">
+                        <p className="font-bold flex items-center gap-1.5 text-emerald-900">
+                          <span>✓</span> Đã duyệt hủy đăng ký ca
+                        </p>
+                        <p className="leading-relaxed text-emerald-800">
+                          Quản lý đã duyệt yêu cầu hủy ca. Đăng ký ca đã bị hủy và suất kỹ năng định biên đã được hoàn trả.
+                        </p>
+                        {selectedLeave.detail.managerNote && (
+                          <p className="text-[11px] text-emerald-700 italic border-t border-emerald-200 pt-1 mt-1">
+                            Ghi chú: {selectedLeave.detail.managerNote}
+                          </p>
+                        )}
+                        {selectedLeave.detail.decidedBy && (
+                          <p className="text-[10px] text-emerald-600">
+                            Người duyệt: {selectedLeave.detail.decidedBy}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {selectedLeave.detail.rawStatus === "REJECTED" && (
+                      <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs font-medium text-red-900 space-y-1">
+                        <p className="font-bold flex items-center gap-1.5 text-red-900">
+                          <span>✗</span> Đã từ chối yêu cầu hủy
+                        </p>
+                        <p className="leading-relaxed text-red-800">
+                          Quản lý đã từ chối yêu cầu hủy ca. Đăng ký ca của bạn vẫn được giữ nguyên.
+                        </p>
+                        {selectedLeave.detail.managerNote && (
+                          <p className="text-[11px] text-red-700 font-semibold border-t border-red-200 pt-1 mt-1">
+                            Lý do từ chối: {selectedLeave.detail.managerNote}
+                          </p>
+                        )}
+                        {selectedLeave.detail.decidedBy && (
+                          <p className="text-[10px] text-red-600">
+                            Người xử lý: {selectedLeave.detail.decidedBy}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {selectedLeave.detail.rawStatus === "AUTO_REJECTED" && (
+                      <div className="p-3.5 bg-purple-50 border border-purple-200 rounded-xl text-xs font-medium text-purple-900 space-y-1">
+                        <p className="font-bold flex items-center gap-1.5 text-purple-900">
+                          <span>⚠️</span> Tự động từ chối
+                        </p>
+                        <p className="leading-relaxed text-purple-800">
+                          {selectedLeave.detail.systemReason || "Yêu cầu không còn hiệu lực do ca đã được chốt (PUBLISHED) hoặc đăng ký đã được duyệt trước đó."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* --- ATTENDANCE TICKET SPECIFIC STATUS INFO (MOB-06) --- */}
                 {selectedLeave.type === "attendance_ticket" && (

@@ -218,9 +218,10 @@ const SharedShiftCard: React.FC<{
   isDisabled?: boolean;
   isPast?: boolean;
   isPreview?: boolean;
+  hasPendingCancel?: boolean;
   onClick: () => void;
   key?: string | number;
-}> = ({ shift, user, isDisabled, isPast, isPreview, onClick }) => {
+}> = ({ shift, user, isDisabled, isPast, isPreview, hasPendingCancel, onClick }) => {
   // CR-12SEP-01: Branch Eligibility
   // Normal shift registration is restricted to Employee.ActiveWorkingBranches.
   // Support shifts are allowed across branches.
@@ -297,6 +298,18 @@ const SharedShiftCard: React.FC<{
             {shift.isSupportShift && (
               <span className="text-[8px] font-black bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded uppercase tracking-widest border border-indigo-200">
                 HỖ TRỢ
+              </span>
+            )}
+            {shift.status === "pending" && shift.rosterStatus === "PENDING_APPROVAL" && (
+              <span className="text-[8px] font-black bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded uppercase tracking-widest border border-amber-200 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                Đang chờ duyệt
+              </span>
+            )}
+            {hasPendingCancel && (
+              <span className="text-[8px] font-black bg-orange-100 text-orange-800 px-1.5 py-0.5 rounded uppercase tracking-widest border border-orange-200 flex items-center gap-1">
+                <Clock className="w-2.5 h-2.5 text-orange-600" />
+                Đã gửi yêu cầu hủy
               </span>
             )}
             <h3
@@ -383,6 +396,12 @@ export default function Schedule() {
     acknowledgeDispatch,
     hasLeaveConflict,
     getLeaveRequestsByDateRange,
+    shiftRegistrationCancelRequests,
+    submitShiftRegistrationCancelRequest,
+    getShiftRegistrationCancelRequest,
+    processShiftRegistrationCancelRequest,
+    simulateRegistrationApproval,
+    simulateShiftPublish,
     qaNotificationScenario,
     setQaDiagnosticResult,
   } = useApp();
@@ -392,6 +411,12 @@ export default function Schedule() {
   const [highlightedShiftId, setHighlightedShiftId] = useState<string | null>(null);
   const [myScheduleSubTab, setMyScheduleSubTab] = useState<"active" | "history">("active");
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+
+  // CR: Employee Request to Cancel Shift Registration during Pending Approval
+  const [showShiftCancelModal, setShowShiftCancelModal] = useState(false);
+  const [shiftCancelTarget, setShiftCancelTarget] = useState<Shift | null>(null);
+  const [shiftCancelReason, setShiftCancelReason] = useState("");
+  const [qaShiftCancelScenario, setQaShiftCancelScenario] = useState<string>("NONE");
 
   const [searchQuery, setSearchQuery] = useState("");
   const [regSearchQuery, setRegSearchQuery] = useState("");
@@ -1228,6 +1253,194 @@ export default function Schedule() {
               exit={{ opacity: 0 }}
               className="p-4 space-y-4"
             >
+              {/* MOCK / QA ONLY: Shift Cancel QA Scenario Switcher & Manager Decision Simulator (CR) */}
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3.5 text-white shadow-md">
+                <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-widest bg-amber-500 text-slate-950 uppercase">
+                      MOCK / QA ONLY
+                    </span>
+                    <span className="text-xs font-bold text-slate-200">Shift Cancel QA Scenario</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">CR-Pending-Cancel</span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                      Chọn kịch bản kiểm thử:
+                    </label>
+                    <select
+                      value={qaShiftCancelScenario}
+                      onChange={(e) => {
+                        const scenId = e.target.value;
+                        setQaShiftCancelScenario(scenId);
+
+                        const targetShiftId = "shift_pending_roster_cancel";
+                        const regId = "REG-CANCEL-001";
+
+                        switch (scenId) {
+                          case "QA-SRC-01": {
+                            // Open registration baseline direct cancel
+                            setWeekOffset(1);
+                            setToast({ message: "QA-SRC-01: Ca OPEN_FOR_REGISTRATION, hủy trực tiếp khả dụng.", type: "info" });
+                            break;
+                          }
+                          case "QA-SRC-02": {
+                            // Pending Approval - eligible to request cancel
+                            setWeekOffset(1);
+                            // Ensure shift is pending with PENDING_APPROVAL and no active cancel request
+                            submitShiftRegistrationCancelRequest && processShiftRegistrationCancelRequest;
+                            setToast({ message: "QA-SRC-02: Ca PENDING_APPROVAL, hiển thị nút 'Yêu cầu hủy đăng ký'.", type: "info" });
+                            break;
+                          }
+                          case "QA-SRC-03": {
+                            // Submit request -> PENDING
+                            const existing = getShiftRegistrationCancelRequest(regId);
+                            if (!existing) {
+                              submitShiftRegistrationCancelRequest(targetShiftId, "Lý do QA: Bận lịch học đột xuất tuần tới");
+                            }
+                            setToast({ message: "QA-SRC-03: Đã tạo yêu cầu hủy PENDING. Ca vẫn Pending, nút chuyển thành 'Đã gửi yêu cầu hủy'.", type: "success" });
+                            break;
+                          }
+                          case "QA-SRC-04": {
+                            // Duplicate guard
+                            const res = submitShiftRegistrationCancelRequest(targetShiftId, "Yêu cầu lần 2");
+                            setToast({ message: res.success ? "Lỗi: Không chặn được trùng" : `QA-SRC-04: Chặn thành công: ${res.message}`, type: res.success ? "error" : "info" });
+                            break;
+                          }
+                          case "QA-SRC-05": {
+                            // Manager Approves Cancellation
+                            const req = getShiftRegistrationCancelRequest(regId);
+                            if (req) {
+                              processShiftRegistrationCancelRequest(req.id, "APPROVE");
+                              setToast({ message: "QA-SRC-05: Quản lý đã duyệt hủy. Đăng ký ca chuyển sang 'rejected' và slot được hoàn lại.", type: "success" });
+                            } else {
+                              // create and approve
+                              const created = submitShiftRegistrationCancelRequest(targetShiftId, "QA test approve");
+                              if (created.request) {
+                                processShiftRegistrationCancelRequest(created.request.id, "APPROVE");
+                                setToast({ message: "QA-SRC-05: Quản lý đã duyệt hủy thành công.", type: "success" });
+                              }
+                            }
+                            break;
+                          }
+                          case "QA-SRC-06": {
+                            // Manager Rejects Cancellation
+                            const req = getShiftRegistrationCancelRequest(regId);
+                            if (req) {
+                              processShiftRegistrationCancelRequest(req.id, "REJECT", "Thiếu người thay thế");
+                              setToast({ message: "QA-SRC-06: Quản lý từ chối hủy. Đăng ký ca vẫn pending, không đổi slot.", type: "info" });
+                            } else {
+                              const created = submitShiftRegistrationCancelRequest(targetShiftId, "QA test reject");
+                              if (created.request) {
+                                processShiftRegistrationCancelRequest(created.request.id, "REJECT", "Thiếu người thay thế");
+                                setToast({ message: "QA-SRC-06: Quản lý đã từ chối yêu cầu hủy.", type: "info" });
+                              }
+                            }
+                            break;
+                          }
+                          case "QA-SRC-07": {
+                            // Registration Approval Wins Race
+                            const existing = getShiftRegistrationCancelRequest(regId);
+                            if (!existing) {
+                              submitShiftRegistrationCancelRequest(targetShiftId, "QA test race approval");
+                            }
+                            simulateRegistrationApproval(targetShiftId);
+                            setToast({ message: "QA-SRC-07: Đăng ký được duyệt trước. Yêu cầu hủy chuyển sang AUTO_REJECTED.", type: "info" });
+                            break;
+                          }
+                          case "QA-SRC-08": {
+                            // Cancellation Approval Wins Race
+                            const req = getShiftRegistrationCancelRequest(regId) || submitShiftRegistrationCancelRequest(targetShiftId, "QA test race cancel").request;
+                            if (req) {
+                              processShiftRegistrationCancelRequest(req.id, "APPROVE");
+                              const tryApprove = simulateRegistrationApproval(targetShiftId);
+                              setToast({ message: `QA-SRC-08: Hủy duyệt trước -> Duyệt ca sau bị chặn: ${tryApprove.message}`, type: "info" });
+                            }
+                            break;
+                          }
+                          case "QA-SRC-09": {
+                            // Shift Published Before Decision
+                            const existing = getShiftRegistrationCancelRequest(regId);
+                            if (!existing) {
+                              submitShiftRegistrationCancelRequest(targetShiftId, "QA test race publish");
+                            }
+                            simulateShiftPublish(targetShiftId);
+                            setToast({ message: "QA-SRC-09: Ca được chốt PUBLISHED -> Yêu cầu hủy tự động thành AUTO_REJECTED.", type: "info" });
+                            break;
+                          }
+                          case "QA-SRC-10": {
+                            // Probation Registration - No false quota release
+                            const probationShift = availableShifts.find(s => s.id === "shift_probation_cancel");
+                            if (probationShift) {
+                              const pRegId = probationShift.registrationId || "REG-PROBATION-001";
+                              const pReq = getShiftRegistrationCancelRequest(pRegId) || submitShiftRegistrationCancelRequest(probationShift.id, "QA test probation").request;
+                              if (pReq) {
+                                processShiftRegistrationCancelRequest(pReq.id, "APPROVE");
+                                setToast({ message: "QA-SRC-10: Thử việc hủy đăng ký -> Đăng ký rejected nhưng KHÔNG xả slot quota.", type: "success" });
+                              }
+                            }
+                            break;
+                          }
+                        }
+                      }}
+                      className="bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-2.5 py-2 text-xs focus:ring-1 focus:ring-amber-500 outline-none"
+                    >
+                      <option value="NONE">-- Chọn kịch bản QA --</option>
+                      <option value="QA-SRC-01">QA-SRC-01: Open Registration — Direct Cancel baseline</option>
+                      <option value="QA-SRC-02">QA-SRC-02: Pending Approval — Eligible to request cancellation</option>
+                      <option value="QA-SRC-03">QA-SRC-03: Submit Request — Registration remains Pending</option>
+                      <option value="QA-SRC-04">QA-SRC-04: Duplicate Request Guard</option>
+                      <option value="QA-SRC-05">QA-SRC-05: Manager Approves Cancellation</option>
+                      <option value="QA-SRC-06">QA-SRC-06: Manager Rejects Cancellation</option>
+                      <option value="QA-SRC-07">QA-SRC-07: Registration Approval Wins Race</option>
+                      <option value="QA-SRC-08">QA-SRC-08: Cancellation Approval Wins Race</option>
+                      <option value="QA-SRC-09">QA-SRC-09: Shift Published Before Decision</option>
+                      <option value="QA-SRC-10">QA-SRC-10: Probation Registration — No false quota release</option>
+                    </select>
+                  </div>
+
+                  {/* QA Manager Decision Simulator Controls */}
+                  {(() => {
+                    const activePendingReq = shiftRegistrationCancelRequests.find((cr) => cr.status === "PENDING");
+                    if (!activePendingReq) return null;
+
+                    return (
+                      <div className="bg-slate-800/90 border border-amber-500/30 rounded-xl p-2.5 mt-2 space-y-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-amber-400">⚡ Giả lập Quản lý xử lý đơn (QA ONLY):</span>
+                          <span className="font-mono text-slate-400">{activePendingReq.id}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-300">
+                          Ca: <span className="font-bold text-white">{activePendingReq.shiftId}</span> • Lý do: "{activePendingReq.reason}"
+                        </p>
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={() => {
+                              const res = processShiftRegistrationCancelRequest(activePendingReq.id, "APPROVE");
+                              setToast({ message: res.message, type: "success" });
+                            }}
+                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg transition-all"
+                          >
+                            [QA] Duyệt hủy (Approve)
+                          </button>
+                          <button
+                            onClick={() => {
+                              const res = processShiftRegistrationCancelRequest(activePendingReq.id, "REJECT", "Thiếu người trực ca");
+                              setToast({ message: res.message, type: "info" });
+                            }}
+                            className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] rounded-lg transition-all"
+                          >
+                            [QA] Từ chối hủy (Reject)
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
               {/* Hard-cap Time-fence Error UI */}
               {(() => {
                 return (
@@ -1385,6 +1598,11 @@ export default function Schedule() {
                             <div className="space-y-3 px-0.5 mt-2">
                               {(shifts as Shift[]).map((shift) => {
                                 const isDisabled = weekOffset !== 1;
+                                const regId = shift.registrationId || `REG-${shift.id.slice(-6)}`;
+                                const hasPendingCancel = Boolean(
+                                  getShiftRegistrationCancelRequest(regId) ||
+                                  shiftRegistrationCancelRequests.find((cr) => cr.shiftId === shift.id && cr.status === "PENDING")
+                                );
 
                                 return (
                                   <SharedShiftCard
@@ -1394,6 +1612,7 @@ export default function Schedule() {
                                     isDisabled={isDisabled}
                                     isPast={weekOffset <= 0}
                                     isPreview={weekOffset >= 2}
+                                    hasPendingCancel={hasPendingCancel}
                                     onClick={() => {
                                       if (hasLeaveConflict(shift.date)) {
                                         setToast({ message: "Trùng lịch nghỉ phép.", type: 'error' });
@@ -1999,22 +2218,67 @@ export default function Schedule() {
                     );
                   }
 
-                  // 2. Pending Registration (Allow cancel)
+                  // 2. Pending Registration Decision Tree (CR-Shift-Cancel-Pending-Approval)
                   if (shiftDetailModal.status === "pending") {
-                    return (
-                      <button
-                        onClick={() => {
-                          const res = handleShiftAction(shiftDetailModal.id, "cancel");
-                          if (res) {
-                            setToast({message: "Hủy ca thành công!", type: 'success'});
-                            setShiftDetailModal(null);
-                          }
-                        }}
-                        className="flex-[2] py-3.5 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider"
-                      >
-                        Hủy đăng ký
-                      </button>
-                    );
+                    const currentRosterStatus = shiftDetailModal.rosterStatus || (weekOffset === 1 ? "OPEN_FOR_REGISTRATION" : "PENDING_APPROVAL");
+                    const regId = shiftDetailModal.registrationId || `REG-${shiftDetailModal.id.slice(-6)}`;
+                    const activeCancelRequest = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftDetailModal.id && cr.status === "PENDING");
+
+                    // CASE C: Active Cancellation Request already exists
+                    if (activeCancelRequest) {
+                      return (
+                        <div className="flex-[2] flex flex-col gap-1">
+                          <button
+                            disabled
+                            className="w-full py-3 bg-slate-100 text-slate-500 font-bold rounded-xl cursor-not-allowed border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                          >
+                            <Clock className="w-3.5 h-3.5 text-amber-500" />
+                            Đã gửi yêu cầu hủy
+                          </button>
+                          <p className="text-[10px] text-slate-500 leading-tight text-center">
+                            Yêu cầu đang chờ Quản lý xử lý. Đăng ký ca của bạn vẫn được giữ cho đến khi yêu cầu được duyệt.
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    // CASE B: Roster entered Manager Review (PENDING_APPROVAL) -> Cannot direct cancel, must create Request
+                    if (currentRosterStatus === "PENDING_APPROVAL") {
+                      return (
+                        <button
+                          onClick={() => {
+                            setShiftCancelTarget(shiftDetailModal);
+                            setShiftCancelReason("");
+                            setShowShiftCancelModal(true);
+                          }}
+                          className="flex-[2] py-3.5 bg-amber-50 border-2 border-amber-500 text-amber-700 hover:bg-amber-100 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                        >
+                          <AlertCircle className="w-4 h-4 text-amber-600" />
+                          Yêu cầu hủy đăng ký
+                        </button>
+                      );
+                    }
+
+                    // CASE A: Still in OPEN_FOR_REGISTRATION -> Direct cancellation baseline
+                    if (currentRosterStatus === "OPEN_FOR_REGISTRATION") {
+                      return (
+                        <button
+                          onClick={() => {
+                            const res = handleShiftAction(shiftDetailModal.id, "cancel");
+                            if (res) {
+                              setToast({message: "Hủy ca thành công!", type: 'success'});
+                              setShiftDetailModal(null);
+                            }
+                          }}
+                          className="flex-[2] py-3.5 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider"
+                        >
+                          Hủy đăng ký
+                        </button>
+                      );
+                    }
+
+                    // CASE D: PUBLISHED -> No cancellation request flow available
+                    return null;
                   }
 
                   // 3. Skill Eligibility Check
@@ -2099,6 +2363,147 @@ export default function Schedule() {
                     >
                       <Lock className="w-4 h-4" />
                       Ca đã đầy
+                    </button>
+                  );
+                })()}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ======================= MODAL: EMPLOYEE CANCEL REQUEST BOTTOM SHEET ======================= */}
+      <AnimatePresence>
+        {showShiftCancelModal && shiftCancelTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          >
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+            >
+              {/* Header */}
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">Yêu cầu hủy đăng ký ca</h2>
+                  <p className="text-xs text-gray-500">
+                    Mã đăng ký: {shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowShiftCancelModal(false)}
+                  className="p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="p-5 overflow-y-auto space-y-4 text-xs">
+                {/* Read-only Shift Summary */}
+                <div className="bg-amber-50/60 border border-amber-200 rounded-xl p-3.5 space-y-2">
+                  <h4 className="font-bold text-amber-900 uppercase tracking-wide">Thông tin ca đăng ký</h4>
+                  <div className="space-y-1.5 text-gray-700">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Tên ca:</span>
+                      <span className="font-bold text-slate-900">{shiftCancelTarget.shiftName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Ngày làm việc:</span>
+                      <span className="font-bold">
+                        {shiftCancelTarget.date instanceof Date ? format(shiftCancelTarget.date, "EEEE, dd/MM/yyyy", { locale: vi }) : "N/A"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Giờ làm việc:</span>
+                      <span className="font-bold font-mono text-[#558BAD]">{shiftCancelTarget.timeStr} ({shiftCancelTarget.hours}h)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Chi nhánh:</span>
+                      <span className="font-bold">{shiftCancelTarget.storeName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Vị trí / Kỹ năng:</span>
+                      <span className="font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-amber-200">
+                        {shiftCancelTarget.requestedSkillTagId || shiftCancelTarget.skillTag}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Duplicate protection warning */}
+                {(() => {
+                  const regId = shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`;
+                  const activePending = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING");
+                  if (activePending) {
+                    return (
+                      <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 font-bold flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+                        <span>Yêu cầu hủy đang chờ xử lý. Bạn không thể tạo thêm yêu cầu trùng lặp.</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Reason Input (Mandatory) */}
+                <div>
+                  <label className="block font-bold text-gray-800 mb-1.5">
+                    Lý do yêu cầu hủy <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={shiftCancelReason}
+                    onChange={(e) => setShiftCancelReason(e.target.value)}
+                    placeholder="Nhập lý do bạn muốn yêu cầu hủy đăng ký ca này..."
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-[#558BAD] focus:border-transparent outline-none transition-all resize-none text-slate-800"
+                  ></textarea>
+                </div>
+
+                {/* Required Information Message (CR-11) */}
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-[11px] leading-relaxed flex items-start gap-2">
+                  <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <span>
+                    Yêu cầu hủy sẽ được gửi tới Quản lý để duyệt. Đăng ký ca hiện tại của bạn vẫn được giữ cho đến khi yêu cầu được duyệt.
+                  </span>
+                </div>
+              </div>
+
+              {/* Footer CTA */}
+              <div className="p-4 border-t border-gray-100 bg-white">
+                {(() => {
+                  const regId = shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`;
+                  const activePending = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING");
+                  const isBlocked = Boolean(activePending) || !shiftCancelReason.trim();
+
+                  return (
+                    <button
+                      disabled={isBlocked}
+                      onClick={() => {
+                        const res = submitShiftRegistrationCancelRequest(shiftCancelTarget.id, shiftCancelReason);
+                        if (res.success) {
+                          setShowShiftCancelModal(false);
+                          setShiftCancelReason("");
+                          setShiftDetailModal(null);
+                          setToast({ message: "Đã gửi yêu cầu hủy đăng ký. Chờ Quản lý xử lý.", type: "success" });
+                        } else {
+                          setToast({ message: res.message, type: "error" });
+                        }
+                      }}
+                      className={cn(
+                        "w-full py-3.5 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-md text-xs uppercase tracking-wider",
+                        isBlocked
+                          ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                          : "bg-[#558BAD] hover:bg-[#446E8A] text-white shadow-[#558BAD]/20 active:scale-[0.98]"
+                      )}
+                    >
+                      <Send className="w-4 h-4" /> Gửi yêu cầu
                     </button>
                   );
                 })()}

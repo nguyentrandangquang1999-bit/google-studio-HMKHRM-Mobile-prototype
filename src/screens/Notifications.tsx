@@ -114,6 +114,17 @@ const mockNotifications: NotificationProps[] = [
     notificationGroup: "TICKET",
     ticketId: "LR-001",
   },
+  // C. Unread = true | Action Needed = false (Yêu cầu hủy đăng ký ca đã duyệt)
+  {
+    id: "src-noti-1",
+    type: "approval",
+    title: "Yêu cầu hủy đăng ký ca đã được duyệt",
+    message: "Yêu cầu hủy đăng ký ca SRC-101 (Ca Tối, 19:00 - 22:00) đã được Quản lý phê duyệt thành công.",
+    time: "2 giờ trước",
+    isRead: false,
+    notificationGroup: "TICKET",
+    ticketId: "SRC-101",
+  },
   // C. Unread = true | Action Needed = false (Ca làm việc bị hủy / Smart Overlap)
   {
     id: "ns-1",
@@ -253,6 +264,7 @@ export default function Notifications() {
     setQaNotificationScenario,
     qaDiagnosticResult,
     setQaDiagnosticResult,
+    shiftRegistrationCancelRequests,
   } = useApp();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -886,6 +898,20 @@ export default function Notifications() {
             return { label: "ĐÃ HỦY", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
           }
           if (lr.status === "PENDING") {
+            return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
+          }
+        }
+
+        // Check in shiftRegistrationCancelRequests
+        const src = (shiftRegistrationCancelRequests || []).find((r) => r.id === tId || r.registrationId === tId);
+        if (src) {
+          if (src.status === "APPROVED") {
+            return { label: "ĐÃ DUYỆT", badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+          }
+          if (src.status === "REJECTED" || src.status === "AUTO_REJECTED") {
+            return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
+          }
+          if (src.status === "PENDING") {
             return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
           }
         }
