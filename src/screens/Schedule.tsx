@@ -26,6 +26,8 @@ import {
   Building2,
   Sparkles,
   Info,
+  RotateCcw,
+  Undo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format, addDays, startOfWeek, isSameDay } from "date-fns";
@@ -398,10 +400,14 @@ export default function Schedule() {
     getLeaveRequestsByDateRange,
     shiftRegistrationCancelRequests,
     submitShiftRegistrationCancelRequest,
+    withdrawShiftRegistrationCancelRequest,
     getShiftRegistrationCancelRequest,
     processShiftRegistrationCancelRequest,
     simulateRegistrationApproval,
     simulateShiftPublish,
+    applyShiftCancelQaScenario,
+    resetShiftCancelQa,
+    shiftCancelQaDiagnostic,
     qaNotificationScenario,
     setQaDiagnosticResult,
   } = useApp();
@@ -417,6 +423,10 @@ export default function Schedule() {
   const [shiftCancelTarget, setShiftCancelTarget] = useState<Shift | null>(null);
   const [shiftCancelReason, setShiftCancelReason] = useState("");
   const [qaShiftCancelScenario, setQaShiftCancelScenario] = useState<string>("NONE");
+
+  // CR: Employee Withdraw Cancellation Request
+  const [showWithdrawConfirmModal, setShowWithdrawConfirmModal] = useState(false);
+  const [withdrawTargetRequest, setWithdrawTargetRequest] = useState<any>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [regSearchQuery, setRegSearchQuery] = useState("");
@@ -1265,125 +1275,44 @@ export default function Schedule() {
                   <span className="text-[10px] text-slate-400 font-mono">CR-Pending-Cancel</span>
                 </div>
 
-                <div className="space-y-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                      Chọn kịch bản kiểm thử:
-                    </label>
+                <div className="space-y-2.5">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                        Chọn kịch bản kiểm thử:
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetShiftCancelQa();
+                          setQaShiftCancelScenario("NONE");
+                          setToast({ message: "Đã khôi phục dữ liệu ca và yêu cầu hủy về trạng thái ban đầu.", type: "info" });
+                        }}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold underline transition-colors flex items-center gap-1"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Reset QA
+                      </button>
+                    </div>
                     <select
                       value={qaShiftCancelScenario}
                       onChange={(e) => {
                         const scenId = e.target.value;
                         setQaShiftCancelScenario(scenId);
 
-                        const targetShiftId = "shift_pending_roster_cancel";
-                        const regId = "REG-CANCEL-001";
-
-                        switch (scenId) {
-                          case "QA-SRC-01": {
-                            // Open registration baseline direct cancel
-                            setWeekOffset(1);
-                            setToast({ message: "QA-SRC-01: Ca OPEN_FOR_REGISTRATION, hủy trực tiếp khả dụng.", type: "info" });
-                            break;
-                          }
-                          case "QA-SRC-02": {
-                            // Pending Approval - eligible to request cancel
-                            setWeekOffset(1);
-                            // Ensure shift is pending with PENDING_APPROVAL and no active cancel request
-                            submitShiftRegistrationCancelRequest && processShiftRegistrationCancelRequest;
-                            setToast({ message: "QA-SRC-02: Ca PENDING_APPROVAL, hiển thị nút 'Yêu cầu hủy đăng ký'.", type: "info" });
-                            break;
-                          }
-                          case "QA-SRC-03": {
-                            // Submit request -> PENDING
-                            const existing = getShiftRegistrationCancelRequest(regId);
-                            if (!existing) {
-                              submitShiftRegistrationCancelRequest(targetShiftId, "Lý do QA: Bận lịch học đột xuất tuần tới");
-                            }
-                            setToast({ message: "QA-SRC-03: Đã tạo yêu cầu hủy PENDING. Ca vẫn Pending, nút chuyển thành 'Đã gửi yêu cầu hủy'.", type: "success" });
-                            break;
-                          }
-                          case "QA-SRC-04": {
-                            // Duplicate guard
-                            const res = submitShiftRegistrationCancelRequest(targetShiftId, "Yêu cầu lần 2");
-                            setToast({ message: res.success ? "Lỗi: Không chặn được trùng" : `QA-SRC-04: Chặn thành công: ${res.message}`, type: res.success ? "error" : "info" });
-                            break;
-                          }
-                          case "QA-SRC-05": {
-                            // Manager Approves Cancellation
-                            const req = getShiftRegistrationCancelRequest(regId);
-                            if (req) {
-                              processShiftRegistrationCancelRequest(req.id, "APPROVE");
-                              setToast({ message: "QA-SRC-05: Quản lý đã duyệt hủy. Đăng ký ca chuyển sang 'rejected' và slot được hoàn lại.", type: "success" });
-                            } else {
-                              // create and approve
-                              const created = submitShiftRegistrationCancelRequest(targetShiftId, "QA test approve");
-                              if (created.request) {
-                                processShiftRegistrationCancelRequest(created.request.id, "APPROVE");
-                                setToast({ message: "QA-SRC-05: Quản lý đã duyệt hủy thành công.", type: "success" });
-                              }
-                            }
-                            break;
-                          }
-                          case "QA-SRC-06": {
-                            // Manager Rejects Cancellation
-                            const req = getShiftRegistrationCancelRequest(regId);
-                            if (req) {
-                              processShiftRegistrationCancelRequest(req.id, "REJECT", "Thiếu người thay thế");
-                              setToast({ message: "QA-SRC-06: Quản lý từ chối hủy. Đăng ký ca vẫn pending, không đổi slot.", type: "info" });
-                            } else {
-                              const created = submitShiftRegistrationCancelRequest(targetShiftId, "QA test reject");
-                              if (created.request) {
-                                processShiftRegistrationCancelRequest(created.request.id, "REJECT", "Thiếu người thay thế");
-                                setToast({ message: "QA-SRC-06: Quản lý đã từ chối yêu cầu hủy.", type: "info" });
-                              }
-                            }
-                            break;
-                          }
-                          case "QA-SRC-07": {
-                            // Registration Approval Wins Race
-                            const existing = getShiftRegistrationCancelRequest(regId);
-                            if (!existing) {
-                              submitShiftRegistrationCancelRequest(targetShiftId, "QA test race approval");
-                            }
-                            simulateRegistrationApproval(targetShiftId);
-                            setToast({ message: "QA-SRC-07: Đăng ký được duyệt trước. Yêu cầu hủy chuyển sang AUTO_REJECTED.", type: "info" });
-                            break;
-                          }
-                          case "QA-SRC-08": {
-                            // Cancellation Approval Wins Race
-                            const req = getShiftRegistrationCancelRequest(regId) || submitShiftRegistrationCancelRequest(targetShiftId, "QA test race cancel").request;
-                            if (req) {
-                              processShiftRegistrationCancelRequest(req.id, "APPROVE");
-                              const tryApprove = simulateRegistrationApproval(targetShiftId);
-                              setToast({ message: `QA-SRC-08: Hủy duyệt trước -> Duyệt ca sau bị chặn: ${tryApprove.message}`, type: "info" });
-                            }
-                            break;
-                          }
-                          case "QA-SRC-09": {
-                            // Shift Published Before Decision
-                            const existing = getShiftRegistrationCancelRequest(regId);
-                            if (!existing) {
-                              submitShiftRegistrationCancelRequest(targetShiftId, "QA test race publish");
-                            }
-                            simulateShiftPublish(targetShiftId);
-                            setToast({ message: "QA-SRC-09: Ca được chốt PUBLISHED -> Yêu cầu hủy tự động thành AUTO_REJECTED.", type: "info" });
-                            break;
-                          }
-                          case "QA-SRC-10": {
-                            // Probation Registration - No false quota release
-                            const probationShift = availableShifts.find(s => s.id === "shift_probation_cancel");
-                            if (probationShift) {
-                              const pRegId = probationShift.registrationId || "REG-PROBATION-001";
-                              const pReq = getShiftRegistrationCancelRequest(pRegId) || submitShiftRegistrationCancelRequest(probationShift.id, "QA test probation").request;
-                              if (pReq) {
-                                processShiftRegistrationCancelRequest(pReq.id, "APPROVE");
-                                setToast({ message: "QA-SRC-10: Thử việc hủy đăng ký -> Đăng ký rejected nhưng KHÔNG xả slot quota.", type: "success" });
-                              }
-                            }
-                            break;
-                          }
+                        if (scenId === "NONE") {
+                          resetShiftCancelQa();
+                          return;
                         }
+
+                        // Ensure viewing next week for test shifts
+                        if (scenId !== "QA-SRC-01") {
+                          setWeekOffset(1);
+                        } else {
+                          setWeekOffset(0);
+                        }
+
+                        const diag = applyShiftCancelQaScenario(scenId as any);
+                        setToast({ message: `${diag.scenarioId}: ${diag.expectedResult}`, type: "info" });
                       }}
                       className="bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-2.5 py-2 text-xs focus:ring-1 focus:ring-amber-500 outline-none"
                     >
@@ -1398,8 +1327,28 @@ export default function Schedule() {
                       <option value="QA-SRC-08">QA-SRC-08: Cancellation Approval Wins Race</option>
                       <option value="QA-SRC-09">QA-SRC-09: Shift Published Before Decision</option>
                       <option value="QA-SRC-10">QA-SRC-10: Probation Registration — No false quota release</option>
+                      <option value="QA-SRC-WD-01">QA-SRC-WD-01: Employee Withdraws Request (WITHDRAWN)</option>
+                      <option value="QA-SRC-WD-02">QA-SRC-WD-02: Resubmit Request After Withdraw</option>
+                      <option value="QA-SRC-WD-03">QA-SRC-WD-03: Cannot Withdraw Decided Request</option>
                     </select>
                   </div>
+
+                  {/* Diagnostic banner if active */}
+                  {shiftCancelQaDiagnostic && (
+                    <div className="p-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-[11px] space-y-1">
+                      <div className="flex items-center justify-between text-amber-400 font-bold">
+                        <span>{shiftCancelQaDiagnostic.scenarioId}: {shiftCancelQaDiagnostic.title}</span>
+                        {shiftCancelQaDiagnostic.requestStatus && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-slate-700 text-slate-200">
+                            {shiftCancelQaDiagnostic.requestStatus}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-slate-300 text-[10px] leading-tight">
+                        {shiftCancelQaDiagnostic.expectedResult}
+                      </p>
+                    </div>
+                  )}
 
                   {/* QA Manager Decision Simulator Controls */}
                   {(() => {
@@ -2182,191 +2131,221 @@ export default function Schedule() {
                 </div>
               </div>
 
-              <div className="pt-4 mt-2 border-t border-gray-100 flex gap-3 pb-safe bg-white w-full sticky bottom-0 z-10">
-                <button
-                  onClick={() => setShiftDetailModal(null)}
-                  className="flex-[1] py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all shadow-sm"
-                >
-                  Đóng
-                </button>
-
                 {(() => {
-                  if (weekOffset <= 0 || weekOffset >= 2) {
-                    return null;
-                  }
+                  const regId = shiftDetailModal.registrationId || `REG-${shiftDetailModal.id.slice(-6)}`;
+                  const activeCancelRequest = shiftDetailModal.status === "pending"
+                    ? (getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftDetailModal.id && cr.status === "PENDING"))
+                    : null;
 
-                  // 1. Branch Eligibility Check
-                  const isModalBranchEligible =
-                    shiftDetailModal.isSupportShift ||
-                    (user?.workingBranches
-                      ? user.workingBranches.some(
-                          (b: any) =>
-                            b.status === "ACTIVE" &&
-                            (b.branchName === shiftDetailModal.storeName || b.branchId === shiftDetailModal.branchId)
-                        )
-                      : user?.authorizedBranches?.includes(shiftDetailModal.storeName) ?? true);
-
-                  if (!isModalBranchEligible) {
+                  // Khi đã có yêu cầu hủy đang chờ duyệt: hiển thị banner full-width bên trên, 2 nút Đóng và Thu hồi yêu cầu nằm ngang hàng cân đối bên dưới
+                  if (activeCancelRequest) {
                     return (
-                      <button
-                        disabled
-                        className="flex-[2] py-3.5 bg-amber-50 border border-amber-200 text-amber-700 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider"
-                      >
-                        <Lock className="w-4 h-4 text-amber-600" />
-                        Ngoài chi nhánh làm việc
-                      </button>
-                    );
-                  }
-
-                  // 2. Pending Registration Decision Tree (CR-Shift-Cancel-Pending-Approval)
-                  if (shiftDetailModal.status === "pending") {
-                    const currentRosterStatus = shiftDetailModal.rosterStatus || (weekOffset === 1 ? "OPEN_FOR_REGISTRATION" : "PENDING_APPROVAL");
-                    const regId = shiftDetailModal.registrationId || `REG-${shiftDetailModal.id.slice(-6)}`;
-                    const activeCancelRequest = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftDetailModal.id && cr.status === "PENDING");
-
-                    // CASE C: Active Cancellation Request already exists
-                    if (activeCancelRequest) {
-                      return (
-                        <div className="flex-[2] flex flex-col gap-1">
-                          <button
-                            disabled
-                            className="w-full py-3 bg-slate-100 text-slate-500 font-bold rounded-xl cursor-not-allowed border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
-                          >
-                            <Clock className="w-3.5 h-3.5 text-amber-500" />
+                      <div className="pt-4 mt-2 border-t border-gray-100 flex flex-col gap-3 pb-safe bg-white w-full sticky bottom-0 z-10">
+                        <div className="w-full p-3.5 bg-amber-50/95 border border-amber-200 rounded-xl space-y-1 shadow-xs">
+                          <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 uppercase tracking-wide">
+                            <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                             Đã gửi yêu cầu hủy
-                          </button>
-                          <p className="text-[10px] text-slate-500 leading-tight text-center">
+                          </div>
+                          <p className="text-[11px] text-amber-700 leading-relaxed font-medium">
                             Yêu cầu đang chờ Quản lý xử lý. Đăng ký ca của bạn vẫn được giữ cho đến khi yêu cầu được duyệt.
                           </p>
                         </div>
-                      );
-                    }
 
-                    // CASE B: Roster entered Manager Review (PENDING_APPROVAL) -> Cannot direct cancel, must create Request
-                    if (currentRosterStatus === "PENDING_APPROVAL") {
-                      return (
-                        <button
-                          onClick={() => {
-                            setShiftCancelTarget(shiftDetailModal);
-                            setShiftCancelReason("");
-                            setShowShiftCancelModal(true);
-                          }}
-                          className="flex-[2] py-3.5 bg-amber-50 border-2 border-amber-500 text-amber-700 hover:bg-amber-100 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
-                        >
-                          <AlertCircle className="w-4 h-4 text-amber-600" />
-                          Yêu cầu hủy đăng ký
-                        </button>
-                      );
-                    }
-
-                    // CASE A: Still in OPEN_FOR_REGISTRATION -> Direct cancellation baseline
-                    if (currentRosterStatus === "OPEN_FOR_REGISTRATION") {
-                      return (
-                        <button
-                          onClick={() => {
-                            const res = handleShiftAction(shiftDetailModal.id, "cancel");
-                            if (res) {
-                              setToast({message: "Hủy ca thành công!", type: 'success'});
-                              setShiftDetailModal(null);
-                            }
-                          }}
-                          className="flex-[2] py-3.5 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider"
-                        >
-                          Hủy đăng ký
-                        </button>
-                      );
-                    }
-
-                    // CASE D: PUBLISHED -> No cancellation request flow available
-                    return null;
-                  }
-
-                  // 3. Skill Eligibility Check
-                  const activeSkills = user?.skillTags
-                    ? user.skillTags.filter((st: any) => st.status === "ACTIVE").map((st: any) => st.skillTagName)
-                    : user?.skills || [];
-
-                  const hasMatchedSkill = (shiftDetailModal.slots
-                    ? shiftDetailModal.slots.map((s) => s.skillTag)
-                    : [shiftDetailModal.skillTag]
-                  ).some((t) => activeSkills.includes(t));
-
-                  if (!hasMatchedSkill) {
-                    return (
-                      <button
-                        disabled
-                        className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider border border-slate-200"
-                      >
-                        <Lock className="w-4 h-4" />
-                        Không đúng kỹ năng
-                      </button>
-                    );
-                  }
-
-                  // 4. Shift Capacity & Slot Capacity Check
-                  const isShiftOverallFull =
-                    shiftDetailModal.maxStaff > 0 &&
-                    (shiftDetailModal.currentStaff || 0) >= shiftDetailModal.maxStaff;
-
-                  const hasMatchedSkillAndSlot = shiftDetailModal.slots
-                    ? shiftDetailModal.slots.some(
-                        (s) =>
-                          activeSkills.includes(s.skillTag) &&
-                          s.current < s.max,
-                      )
-                    : !isShiftOverallFull;
-
-                  if (isShiftOverallFull || !hasMatchedSkillAndSlot) {
-                    return (
-                      <button
-                        disabled
-                        className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
-                      >
-                        <Lock className="w-4 h-4" />
-                        Ca đã đầy
-                      </button>
-                    );
-                  }
-
-                  const needsSlotSelection =
-                    shiftDetailModal.slots && selectedSlotId === null;
-
-                  if (shiftDetailModal.status === "open") {
-                    return (
-                      <button
-                        disabled={!!needsSlotSelection}
-                        onClick={() => {
-                          const res = handleShiftAction(shiftDetailModal.id, "register");
-                          if (res) {
-                            setToast({message: "Đăng ký ca thành công! Ca đang được CHỜ DUYỆT.", type: 'success'});
-                            setShiftDetailModal(null);
-                          }
-                        }}
-                        className={cn(
-                          "flex-[2] py-3.5 font-bold rounded-xl flex items-center justify-center transition-all shadow-md text-xs uppercase tracking-wider",
-                          needsSlotSelection
-                            ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
-                            : "bg-[#558BAD] hover:bg-[#446E8A] text-white shadow-[#558BAD]/20 active:scale-[0.98]",
-                        )}
-                      >
-                        {needsSlotSelection
-                          ? "Chọn Kỹ năng"
-                          : "Đăng ký ngay"}
-                      </button>
+                        <div className="flex gap-3 w-full">
+                          <button
+                            type="button"
+                            onClick={() => setShiftDetailModal(null)}
+                            className="flex-1 py-3.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all shadow-sm text-xs uppercase tracking-wider active:scale-[0.98]"
+                          >
+                            Đóng
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWithdrawTargetRequest(activeCancelRequest);
+                              setShowWithdrawConfirmModal(true);
+                            }}
+                            className="flex-1 py-3.5 bg-white hover:bg-amber-50 text-amber-700 font-bold rounded-xl transition-all border-2 border-amber-500 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.98]"
+                          >
+                            <Undo2 className="w-4 h-4 text-amber-600" />
+                            Thu hồi yêu cầu
+                          </button>
+                        </div>
+                      </div>
                     );
                   }
 
                   return (
-                    <button
-                      disabled
-                      className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
-                    >
-                      <Lock className="w-4 h-4" />
-                      Ca đã đầy
-                    </button>
+                    <div className="pt-4 mt-2 border-t border-gray-100 flex gap-3 pb-safe bg-white w-full sticky bottom-0 z-10">
+                      <button
+                        type="button"
+                        onClick={() => setShiftDetailModal(null)}
+                        className="flex-[1] py-3.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-all shadow-sm text-xs uppercase tracking-wider active:scale-[0.98]"
+                      >
+                        Đóng
+                      </button>
+
+                      {(() => {
+                        if (weekOffset <= 0 || weekOffset >= 2) {
+                          return null;
+                        }
+
+                        // 1. Branch Eligibility Check
+                        const isModalBranchEligible =
+                          shiftDetailModal.isSupportShift ||
+                          (user?.workingBranches
+                            ? user.workingBranches.some(
+                                (b: any) =>
+                                  b.status === "ACTIVE" &&
+                                  (b.branchName === shiftDetailModal.storeName || b.branchId === shiftDetailModal.branchId)
+                              )
+                            : user?.authorizedBranches?.includes(shiftDetailModal.storeName) ?? true);
+
+                        if (!isModalBranchEligible) {
+                          return (
+                            <button
+                              disabled
+                              className="flex-[2] py-3.5 bg-amber-50 border border-amber-200 text-amber-700 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider"
+                            >
+                              <Lock className="w-4 h-4 text-amber-600" />
+                              Ngoài chi nhánh làm việc
+                            </button>
+                          );
+                        }
+
+                        // 2. Pending Registration Decision Tree (CR-Shift-Cancel-Pending-Approval)
+                        if (shiftDetailModal.status === "pending") {
+                          const currentRosterStatus = shiftDetailModal.rosterStatus || (weekOffset === 1 ? "OPEN_FOR_REGISTRATION" : "PENDING_APPROVAL");
+
+                          // CASE B: Roster entered Manager Review (PENDING_APPROVAL) -> Cannot direct cancel, must create Request
+                          if (currentRosterStatus === "PENDING_APPROVAL") {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShiftCancelTarget(shiftDetailModal);
+                                  setShiftCancelReason("");
+                                  setShowShiftCancelModal(true);
+                                }}
+                                className="flex-[2] py-3.5 bg-amber-50 border-2 border-amber-500 text-amber-700 hover:bg-amber-100 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                              >
+                                <AlertCircle className="w-4 h-4 text-amber-600" />
+                                Yêu cầu hủy đăng ký
+                              </button>
+                            );
+                          }
+
+                          // CASE A: Still in OPEN_FOR_REGISTRATION -> Direct cancellation baseline
+                          if (currentRosterStatus === "OPEN_FOR_REGISTRATION") {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const res = handleShiftAction(shiftDetailModal.id, "cancel");
+                                  if (res) {
+                                    setToast({message: "Hủy ca thành công!", type: 'success'});
+                                    setShiftDetailModal(null);
+                                  }
+                                }}
+                                className="flex-[2] py-3.5 bg-white border-2 border-red-500 text-red-500 hover:bg-red-50 font-bold rounded-xl transition-all shadow-sm active:scale-[0.98] text-xs uppercase tracking-wider"
+                              >
+                                Hủy đăng ký
+                              </button>
+                            );
+                          }
+
+                          // CASE D: PUBLISHED -> No cancellation request flow available
+                          return null;
+                        }
+
+                        // 3. Skill Eligibility Check
+                        const activeSkills = user?.skillTags
+                          ? user.skillTags.filter((st: any) => st.status === "ACTIVE").map((st: any) => st.skillTagName)
+                          : user?.skills || [];
+
+                        const hasMatchedSkill = (shiftDetailModal.slots
+                          ? shiftDetailModal.slots.map((s) => s.skillTag)
+                          : [shiftDetailModal.skillTag]
+                        ).some((t) => activeSkills.includes(t));
+
+                        if (!hasMatchedSkill) {
+                          return (
+                            <button
+                              disabled
+                              className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed flex items-center justify-center gap-1.5 text-xs uppercase tracking-wider border border-slate-200"
+                            >
+                              <Lock className="w-4 h-4" />
+                              Không đúng kỹ năng
+                            </button>
+                          );
+                        }
+
+                        // 4. Shift Capacity & Slot Capacity Check
+                        const isShiftOverallFull =
+                          shiftDetailModal.maxStaff > 0 &&
+                          (shiftDetailModal.currentStaff || 0) >= shiftDetailModal.maxStaff;
+
+                        const hasMatchedSkillAndSlot = shiftDetailModal.slots
+                          ? shiftDetailModal.slots.some(
+                              (s) =>
+                                activeSkills.includes(s.skillTag) &&
+                                s.current < s.max,
+                            )
+                          : !isShiftOverallFull;
+
+                        if (isShiftOverallFull || !hasMatchedSkillAndSlot) {
+                          return (
+                            <button
+                              disabled
+                              className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                            >
+                              <Lock className="w-4 h-4" />
+                              Ca đã đầy
+                            </button>
+                          );
+                        }
+
+                        const needsSlotSelection =
+                          shiftDetailModal.slots && selectedSlotId === null;
+
+                        if (shiftDetailModal.status === "open") {
+                          return (
+                            <button
+                              disabled={!!needsSlotSelection}
+                              onClick={() => {
+                                const res = handleShiftAction(shiftDetailModal.id, "register");
+                                if (res) {
+                                  setToast({message: "Đăng ký ca thành công! Ca đang được CHỜ DUYỆT.", type: 'success'});
+                                  setShiftDetailModal(null);
+                                }
+                              }}
+                              className={cn(
+                                "flex-[2] py-3.5 font-bold rounded-xl flex items-center justify-center transition-all shadow-md text-xs uppercase tracking-wider",
+                                needsSlotSelection
+                                  ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+                                  : "bg-[#558BAD] hover:bg-[#446E8A] text-white shadow-[#558BAD]/20 active:scale-[0.98]",
+                              )}
+                            >
+                              {needsSlotSelection
+                                ? "Chọn Kỹ năng"
+                                : "Đăng ký ngay"}
+                            </button>
+                          );
+                        }
+
+                        return (
+                          <button
+                            disabled
+                            className="flex-[2] py-3.5 bg-slate-100 text-slate-400 font-bold rounded-xl cursor-not-allowed transition-all border border-slate-200 text-xs uppercase tracking-wider flex items-center justify-center gap-1.5"
+                          >
+                            <Lock className="w-4 h-4" />
+                            Ca đã đầy
+                          </button>
+                        );
+                      })()}
+                    </div>
                   );
                 })()}
-              </div>
             </motion.div>
           </motion.div>
         )}
@@ -2379,14 +2358,16 @@ export default function Schedule() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[120] flex justify-center items-end"
+            onClick={() => setShowShiftCancelModal(false)}
           >
             <motion.div
               initial={{ y: "100%" }}
               animate={{ y: 0 }}
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white w-full max-w-md rounded-t-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl pb-safe"
             >
               {/* Header */}
               <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
@@ -2397,6 +2378,7 @@ export default function Schedule() {
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowShiftCancelModal(false)}
                   className="p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100"
                 >
@@ -2484,6 +2466,7 @@ export default function Schedule() {
 
                   return (
                     <button
+                      type="button"
                       disabled={isBlocked}
                       onClick={() => {
                         const res = submitShiftRegistrationCancelRequest(shiftCancelTarget.id, shiftCancelReason);
@@ -2507,6 +2490,78 @@ export default function Schedule() {
                     </button>
                   );
                 })()}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ======================= MODAL: CONFIRM WITHDRAW CANCELLATION REQUEST ======================= */}
+      <AnimatePresence>
+        {showWithdrawConfirmModal && withdrawTargetRequest && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[130] flex justify-center items-end"
+            onClick={() => setShowWithdrawConfirmModal(false)}
+          >
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white w-full max-w-md rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
+            >
+              <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto -mt-1 mb-1 shrink-0" />
+              
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center mx-auto text-amber-600">
+                <Undo2 className="w-6 h-6" />
+              </div>
+
+              <div className="text-center space-y-2">
+                <h3 className="text-base font-bold text-slate-900">
+                  Thu hồi yêu cầu hủy đăng ký?
+                </h3>
+                {(() => {
+                  const targetShift = availableShifts.find((s) => s.id === withdrawTargetRequest.shiftId) || shiftDetailModal;
+                  const shiftName = targetShift?.shiftName || "Ca làm việc";
+                  const shiftTime = targetShift?.timeStr || "";
+
+                  return (
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      Sau khi thu hồi, yêu cầu hủy sẽ không còn được gửi tới Quản lý xử lý. Đăng ký{" "}
+                      <span className="font-bold text-slate-900">{shiftName}</span>
+                      {shiftTime ? ` (${shiftTime})` : ""} của bạn vẫn được giữ và tiếp tục chờ Quản lý duyệt.
+                    </p>
+                  );
+                })()}
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowWithdrawConfirmModal(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all active:scale-[0.98]"
+                >
+                  Không
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = withdrawShiftRegistrationCancelRequest(withdrawTargetRequest.id);
+                    setShowWithdrawConfirmModal(false);
+                    if (res.success) {
+                      setToast({ message: "Đã thu hồi yêu cầu hủy đăng ký ca.", type: "success" });
+                    } else {
+                      setToast({ message: res.message, type: "error" });
+                    }
+                  }}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-[0.98]"
+                >
+                  Thu hồi yêu cầu
+                </button>
               </div>
             </motion.div>
           </motion.div>

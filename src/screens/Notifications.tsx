@@ -911,6 +911,9 @@ export default function Notifications() {
           if (src.status === "REJECTED" || src.status === "AUTO_REJECTED") {
             return { label: "ĐÃ TỪ CHỐI", badgeClass: "bg-rose-50 text-rose-700 border-rose-200" };
           }
+          if (src.status === "WITHDRAWN") {
+            return { label: "ĐÃ THU HỒI", badgeClass: "bg-slate-100 text-slate-600 border-slate-200" };
+          }
           if (src.status === "PENDING") {
             return { label: "ĐÃ GỬI", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" };
           }

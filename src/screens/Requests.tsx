@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   FastForward,
   CalendarX,
+  Undo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -173,6 +174,7 @@ export default function Requests() {
     qaNotificationScenario,
     setQaDiagnosticResult,
     shiftRegistrationCancelRequests,
+    withdrawShiftRegistrationCancelRequest,
   } = useApp();
   
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
@@ -181,6 +183,10 @@ export default function Requests() {
   const [receivedRevs, setReceivedRevs] = useState(mockReceivedRequests);
   const [sentRevs, setSentRevs] = useState(mockSentRequests);
   const [isLeaveBalanceCollapsed, setIsLeaveBalanceCollapsed] = useState(false);
+
+  // Withdraw Shift Cancel Request State
+  const [showWithdrawShiftCancelModal, setShowWithdrawShiftCancelModal] = useState(false);
+  const [withdrawShiftCancelTarget, setWithdrawShiftCancelTarget] = useState<any>(null);
 
   const usedLeaveDays = leaveRequests
     .filter(l => (l.type === "ANNUAL_LEAVE" || (l.type as string) === "Phép năm") && (l.status === "APPROVED" || (l.status as string) === "Đã duyệt"))
@@ -698,6 +704,10 @@ export default function Requests() {
         mappedStatus = "rejected-manager";
         statusLabel = "Đã từ chối";
         color = "text-red-500";
+      } else if (src.status === "WITHDRAWN") {
+        mappedStatus = "withdrawn";
+        statusLabel = "Đã thu hồi";
+        color = "text-slate-400";
       } else if (src.status === "AUTO_REJECTED") {
         mappedStatus = "auto-rejected";
         statusLabel = "Tự động từ chối";
@@ -725,6 +735,8 @@ export default function Requests() {
           decidedAt: src.decidedAt instanceof Date ? format(src.decidedAt, "HH:mm, dd/MM/yyyy", { locale: vi }) : undefined,
           decidedBy: src.decidedBy,
           systemReason: src.systemReason,
+          withdrawnAt: src.withdrawnAt instanceof Date ? format(src.withdrawnAt, "HH:mm, dd/MM/yyyy", { locale: vi }) : undefined,
+          withdrawnBy: src.withdrawnBy,
           branch: relatedShift?.storeName || user?.department || "HMK Nguyễn Trãi",
         },
         originalShiftCancelRequest: src,
@@ -778,6 +790,12 @@ export default function Requests() {
         return (
           <span className="bg-gray-100 text-gray-600 border border-gray-200 text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">
             {statusLabel || "Đã hủy"}
+          </span>
+        );
+      case "withdrawn":
+        return (
+          <span className="bg-slate-100 text-slate-600 border border-slate-200 text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">
+            {statusLabel || "Đã thu hồi"}
           </span>
         );
       case "pending-peer":
@@ -2361,6 +2379,22 @@ export default function Requests() {
                         </p>
                       </div>
                     )}
+
+                    {selectedLeave.detail.rawStatus === "WITHDRAWN" && (
+                      <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 space-y-1">
+                        <p className="font-bold flex items-center gap-1.5 text-slate-800">
+                          <Undo2 className="w-4 h-4 text-slate-600" /> Đã thu hồi yêu cầu
+                        </p>
+                        <p className="leading-relaxed text-slate-600">
+                          Bạn đã chủ động thu hồi yêu cầu hủy ca này. Đăng ký ca của bạn vẫn được giữ nguyên và tiếp tục chờ Quản lý duyệt.
+                        </p>
+                        {selectedLeave.detail.withdrawnAt && (
+                          <p className="text-[10px] text-slate-500 border-t border-slate-200 pt-1 mt-1">
+                            Thời gian thu hồi: {selectedLeave.detail.withdrawnAt}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2610,7 +2644,21 @@ export default function Requests() {
               </div>
 
               {/* Bottom Actions CTA Matrix */}
-              {selectedLeave.type === "attendance_ticket" ? (
+              {selectedLeave.type === "shift_cancel" ? (
+                selectedLeave.detail?.rawStatus === "PENDING" ? (
+                  <div className="absolute bottom-0 left-0 w-full bg-white flex p-4 pb-safe z-20 border-t border-gray-100 shadow-lg">
+                    <button
+                      onClick={() => {
+                        setWithdrawShiftCancelTarget(selectedLeave);
+                        setShowWithdrawShiftCancelModal(true);
+                      }}
+                      className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl transition-all border border-slate-300 flex items-center justify-center gap-2 active:scale-[0.98]"
+                    >
+                      <Undo2 className="w-4 h-4 text-slate-600" /> Thu hồi yêu cầu
+                    </button>
+                  </div>
+                ) : null
+              ) : selectedLeave.type === "attendance_ticket" ? (
                 (selectedLeave.status === "pending-manager" || selectedLeave.detail?.rawStatus === "PENDING") && (
                   <div className="absolute bottom-0 left-0 w-full bg-white flex p-4 pb-safe z-20 border-t border-gray-100 shadow-lg">
                     <button
@@ -2682,6 +2730,70 @@ export default function Requests() {
                   );
                 })()
               )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* CONFIRM WITHDRAW SHIFT REGISTRATION CANCEL REQUEST MODAL */}
+      <AnimatePresence>
+        {showWithdrawShiftCancelModal && withdrawShiftCancelTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[130] flex justify-center items-end"
+            onClick={() => setShowWithdrawShiftCancelModal(false)}
+          >
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white w-full max-w-md rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
+            >
+              <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto -mt-1 mb-1 shrink-0" />
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center mx-auto text-amber-600">
+                <Undo2 className="w-6 h-6" />
+              </div>
+              <div className="text-center space-y-2">
+                <h3 className="text-base font-bold text-slate-900">
+                  Thu hồi yêu cầu hủy đăng ký?
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Sau khi thu hồi, yêu cầu hủy sẽ không còn được gửi tới Quản lý xử lý. Đăng ký{" "}
+                  <span className="font-bold text-slate-900">
+                    {withdrawShiftCancelTarget.detail?.relatedShift?.shiftName || "Ca làm việc"}
+                  </span>
+                  {withdrawShiftCancelTarget.detail?.relatedShift?.timeStr ? ` (${withdrawShiftCancelTarget.detail.relatedShift.timeStr})` : ""} của bạn vẫn được giữ và tiếp tục chờ Quản lý duyệt.
+                </p>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowWithdrawShiftCancelModal(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all active:scale-[0.98]"
+                >
+                  Không
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = withdrawShiftRegistrationCancelRequest(withdrawShiftCancelTarget.id);
+                    setShowWithdrawShiftCancelModal(false);
+                    if (res.success) {
+                      setToast({ message: "Đã thu hồi yêu cầu hủy đăng ký ca.", type: "success" });
+                      setSelectedLeave(null);
+                    } else {
+                      setToast({ message: res.message, type: "error" });
+                    }
+                  }}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-[0.98]"
+                >
+                  Thu hồi yêu cầu
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

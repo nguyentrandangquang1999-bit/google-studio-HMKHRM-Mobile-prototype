@@ -246,6 +246,7 @@ export type ShiftRegistrationCancelRequestStatus =
   | "PENDING"
   | "APPROVED"
   | "REJECTED"
+  | "WITHDRAWN"
   | "AUTO_REJECTED";
 
 export type ShiftRegistrationCancelRequest = {
@@ -261,6 +262,37 @@ export type ShiftRegistrationCancelRequest = {
   decidedBy?: string;
   managerNote?: string;
   systemReason?: string;
+  withdrawnAt?: Date;
+  withdrawnBy?: string;
+};
+
+export type ShiftCancelQaScenarioId =
+  | "NONE"
+  | "QA-SRC-01"
+  | "QA-SRC-02"
+  | "QA-SRC-03"
+  | "QA-SRC-04"
+  | "QA-SRC-05"
+  | "QA-SRC-06"
+  | "QA-SRC-07"
+  | "QA-SRC-08"
+  | "QA-SRC-09"
+  | "QA-SRC-10"
+  | "QA-SRC-WD-01"
+  | "QA-SRC-WD-02"
+  | "QA-SRC-WD-03"
+  | "QA-SRC-WD-04"
+  | "QA-SRC-WD-05"
+  | "QA-SRC-WD-06";
+
+export type ShiftCancelQaDiagnostic = {
+  scenarioId: ShiftCancelQaScenarioId;
+  title: string;
+  targetShiftId: string;
+  registrationId: string;
+  activeRequestId?: string;
+  requestStatus?: string;
+  expectedResult: string;
 };
 
 export type Shift = {
@@ -352,9 +384,15 @@ type AppContextType = {
     shiftId: string,
     reason: string
   ) => { success: boolean; message: string; request?: ShiftRegistrationCancelRequest };
+  withdrawShiftRegistrationCancelRequest: (
+    requestId: string
+  ) => { success: boolean; message: string };
   getShiftRegistrationCancelRequest: (
     registrationId: string
   ) => ShiftRegistrationCancelRequest | undefined;
+  getShiftRegistrationCancelRequestHistory: (
+    registrationId: string
+  ) => ShiftRegistrationCancelRequest[];
   processShiftRegistrationCancelRequest: (
     requestId: string,
     action: "APPROVE" | "REJECT",
@@ -362,6 +400,12 @@ type AppContextType = {
   ) => { success: boolean; message: string };
   simulateRegistrationApproval: (shiftId: string) => { success: boolean; message: string };
   simulateShiftPublish: (shiftId: string) => { success: boolean; message: string };
+  applyShiftCancelQaScenario: (
+    scenarioId: ShiftCancelQaScenarioId
+  ) => ShiftCancelQaDiagnostic;
+  resetShiftCancelQa: () => void;
+  shiftCancelQaDiagnostic: ShiftCancelQaDiagnostic | null;
+  setShiftRegistrationCancelRequests: React.Dispatch<React.SetStateAction<ShiftRegistrationCancelRequest[]>>;
 
   // Leave Management & MOB-01
   leaveRequests: LeaveRequest[];
@@ -586,6 +630,286 @@ const getNextMonday = () => {
   d.setDate(d.getDate() + ((1 + 7 - d.getDay()) % 7 || 7));
   return d;
 };
+
+export const CR_DEMO_SHIFT_IDS = [
+  "shift_cr_demo_1_open",
+  "shift_cr_demo_2_direct_cancel",
+  "shift_cr_demo_3_pending_approval",
+  "shift_cr_demo_4_cancel_pending",
+  "shift_cr_demo_5_withdrawn",
+  "shift_cr_demo_6_probation",
+];
+
+export const getCrDemoShifts = (baseDate?: Date): Shift[] => {
+  const targetDate = baseDate || (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 7);
+    return d;
+  })();
+
+  return [
+    {
+      id: "shift_cr_demo_1_open",
+      date: targetDate,
+      shiftName: "Ca Sáng — Có thể đăng ký",
+      timeStr: "08:00 - 15:00",
+      hours: 7,
+      currentStaff: 1,
+      maxStaff: 3,
+      status: "open",
+      rosterStatus: "OPEN_FOR_REGISTRATION",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Tư vấn",
+      requestedSkillTagId: undefined,
+      registrationCountsTowardQuota: true,
+      slots: [
+        {
+          id: "slot_cr_1_tuvan",
+          skillTagId: "sk-tuvan",
+          skillTag: "Tư vấn",
+          title: "Tư vấn bán hàng",
+          current: 1,
+          max: 2,
+        },
+        {
+          id: "slot_cr_1_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 0,
+          max: 1,
+        },
+      ],
+    },
+    {
+      id: "shift_cr_demo_2_direct_cancel",
+      date: targetDate,
+      createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+      createdAt: new Date(targetDate.getTime() - 24 * 3600 * 1000),
+      statusUpdatedAt: new Date(targetDate.getTime() - 24 * 3600 * 1000),
+      shiftName: "Ca Chiều — Đã đăng ký, cổng còn mở",
+      timeStr: "15:00 - 22:00",
+      hours: 7,
+      currentStaff: 2,
+      maxStaff: 4,
+      status: "pending",
+      rosterStatus: "OPEN_FOR_REGISTRATION",
+      registrationId: "REG-CR-002",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Tư vấn",
+      requestedSkillTagId: "sk-tuvan",
+      assignedSkillTagId: "sk-tuvan",
+      registrationCountsTowardQuota: true,
+      slots: [
+        {
+          id: "slot_cr_2_tuvan",
+          skillTagId: "sk-tuvan",
+          skillTag: "Tư vấn",
+          title: "Tư vấn bán hàng",
+          current: 2,
+          max: 3,
+        },
+        {
+          id: "slot_cr_2_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 0,
+          max: 1,
+        },
+      ],
+    },
+    {
+      id: "shift_cr_demo_3_pending_approval",
+      date: targetDate,
+      createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+      createdAt: new Date(targetDate.getTime() - 48 * 3600 * 1000),
+      statusUpdatedAt: new Date(targetDate.getTime() - 24 * 3600 * 1000),
+      shiftName: "Ca Tối — Đang duyệt",
+      timeStr: "17:00 - 23:00",
+      hours: 6,
+      currentStaff: 2,
+      maxStaff: 3,
+      status: "pending",
+      rosterStatus: "PENDING_APPROVAL",
+      registrationId: "REG-CR-003",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Tư vấn",
+      requestedSkillTagId: "sk-tuvan",
+      assignedSkillTagId: "sk-tuvan",
+      registrationCountsTowardQuota: true,
+      slots: [
+        {
+          id: "slot_cr_3_tuvan",
+          skillTagId: "sk-tuvan",
+          skillTag: "Tư vấn",
+          title: "Tư vấn bán hàng",
+          current: 2,
+          max: 2,
+        },
+        {
+          id: "slot_cr_3_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 0,
+          max: 1,
+        },
+      ],
+    },
+    {
+      id: "shift_cr_demo_4_cancel_pending",
+      date: targetDate,
+      createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+      createdAt: new Date(targetDate.getTime() - 48 * 3600 * 1000),
+      statusUpdatedAt: new Date(targetDate.getTime() - 12 * 3600 * 1000),
+      shiftName: "Ca Gãy — Đã gửi yêu cầu hủy",
+      timeStr: "10:00 - 15:00",
+      hours: 5,
+      currentStaff: 2,
+      maxStaff: 3,
+      status: "pending",
+      rosterStatus: "PENDING_APPROVAL",
+      registrationId: "REG-CR-004",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Thu ngân",
+      requestedSkillTagId: "sk-thungan",
+      assignedSkillTagId: "sk-thungan",
+      registrationCountsTowardQuota: true,
+      slots: [
+        {
+          id: "slot_cr_4_tuvan",
+          skillTagId: "sk-tuvan",
+          skillTag: "Tư vấn",
+          title: "Tư vấn bán hàng",
+          current: 1,
+          max: 2,
+        },
+        {
+          id: "slot_cr_4_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 1,
+          max: 1,
+        },
+      ],
+    },
+    {
+      id: "shift_cr_demo_5_withdrawn",
+      date: targetDate,
+      createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+      createdAt: new Date(targetDate.getTime() - 48 * 3600 * 1000),
+      statusUpdatedAt: new Date(targetDate.getTime() - 6 * 3600 * 1000),
+      shiftName: "Ca Sáng 2 — Đã thu hồi yêu cầu hủy",
+      timeStr: "07:30 - 14:30",
+      hours: 7,
+      currentStaff: 2,
+      maxStaff: 4,
+      status: "pending",
+      rosterStatus: "PENDING_APPROVAL",
+      registrationId: "REG-CR-005",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Tư vấn",
+      requestedSkillTagId: "sk-tuvan",
+      assignedSkillTagId: "sk-tuvan",
+      registrationCountsTowardQuota: true,
+      slots: [
+        {
+          id: "slot_cr_5_tuvan",
+          skillTagId: "sk-tuvan",
+          skillTag: "Tư vấn",
+          title: "Tư vấn bán hàng",
+          current: 2,
+          max: 3,
+        },
+        {
+          id: "slot_cr_5_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 0,
+          max: 1,
+        },
+      ],
+    },
+    {
+      id: "shift_cr_demo_6_probation",
+      date: targetDate,
+      createdBy: "Nguyễn Trần Đăng Quang (Bạn)",
+      createdAt: new Date(targetDate.getTime() - 48 * 3600 * 1000),
+      statusUpdatedAt: new Date(targetDate.getTime() - 24 * 3600 * 1000),
+      shiftName: "Ca Tối — Thử việc",
+      timeStr: "17:00 - 23:00",
+      hours: 6,
+      currentStaff: 2,
+      maxStaff: 4,
+      status: "pending",
+      rosterStatus: "PENDING_APPROVAL",
+      registrationId: "REG-CR-006",
+      storeName: "HMK Nguyễn Trãi",
+      branchId: "br-nt",
+      skillTag: "Thu ngân",
+      requestedSkillTagId: "sk-thungan",
+      assignedSkillTagId: "sk-thungan",
+      registrationCountsTowardQuota: false,
+      slots: [
+        {
+          id: "slot_cr_6_thungan",
+          skillTagId: "sk-thungan",
+          skillTag: "Thu ngân",
+          title: "Thu ngân",
+          current: 2,
+          max: 4,
+        },
+      ],
+    },
+  ];
+};
+
+export const getCanonicalCrCancellationRequests = (): ShiftRegistrationCancelRequest[] => [
+  {
+    id: "SRC-CR-004",
+    registrationId: "REG-CR-004",
+    shiftId: "shift_cr_demo_4_cancel_pending",
+    employeeId: "u1",
+    requestedSkillTagId: "sk-thungan",
+    reason: "Bận lịch học tăng cường đột xuất vào khung giờ ca gãy.",
+    submittedAt: new Date(Date.now() - 12 * 3600 * 1000),
+    status: "PENDING",
+  },
+  {
+    id: "SRC-CR-005",
+    registrationId: "REG-CR-005",
+    shiftId: "shift_cr_demo_5_withdrawn",
+    employeeId: "u1",
+    requestedSkillTagId: "sk-tuvan",
+    reason: "Đã thu xếp được việc cá nhân nên rút lại yêu cầu hủy ca.",
+    submittedAt: new Date(Date.now() - 24 * 3600 * 1000),
+    status: "WITHDRAWN",
+    withdrawnAt: new Date(Date.now() - 6 * 3600 * 1000),
+    withdrawnBy: "Nguyễn Trần Đăng Quang (Bạn)",
+  },
+  {
+    id: "SRC-101",
+    registrationId: "REG-PAST-002",
+    shiftId: "case_return_today",
+    employeeId: "u1",
+    requestedSkillTagId: "sk-tuvan",
+    reason: "Gia đình có việc đột xuất, xin phép quản lý cho hủy đăng ký ca.",
+    submittedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+    status: "APPROVED",
+    decidedAt: new Date(Date.now() - 1 * 24 * 3600 * 1000),
+    decidedBy: "Nguyễn Minh Anh (CHT)",
+    managerNote: "Đã duyệt hủy và điều phối nhân sự thay thế.",
+  },
+];
 
 // Generate mock shifts
 const generateShifts = (): Shift[] => {
@@ -940,7 +1264,8 @@ const generateShifts = (): Shift[] => {
       });
     }
 
-    for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+    if (weekOffset !== 1) {
+      for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
       const date = new Date(monday);
       date.setDate(date.getDate() + dayOffset);
 
@@ -996,6 +1321,7 @@ const generateShifts = (): Shift[] => {
           ],
         });
       });
+    }
     }
   };
 
@@ -1179,7 +1505,7 @@ const generateShifts = (): Shift[] => {
     storeName: "HMK Nguyễn Trãi",
     branchId: "br-nt",
     skillTag: "Tư vấn",
-    requestedSkillTagId: "Tư vấn",
+    requestedSkillTagId: "sk-tuvan",
     registrationId: "REG-CANCEL-001",
     registrationCountsTowardQuota: true,
     slots: [
@@ -1219,7 +1545,7 @@ const generateShifts = (): Shift[] => {
     storeName: "HMK Nguyễn Trãi",
     branchId: "br-nt",
     skillTag: "Thu ngân",
-    requestedSkillTagId: "Thu ngân",
+    requestedSkillTagId: "sk-thungan",
     registrationId: "REG-PROBATION-001",
     registrationCountsTowardQuota: false, // Does NOT consume slot quota
     slots: [
@@ -1591,13 +1917,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       registrationId: "REG-PAST-002",
       shiftId: "case_return_today",
       employeeId: "u1",
-      requestedSkillTagId: "Tư vấn",
+      requestedSkillTagId: "sk-tuvan",
       reason: "Gia đình có việc đột xuất, xin phép quản lý cho hủy đăng ký ca.",
       submittedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
       status: "APPROVED",
       decidedAt: new Date(Date.now() - 1 * 24 * 3600 * 1000),
       decidedBy: "Nguyễn Minh Anh (CHT)",
       managerNote: "Đã duyệt hủy và điều phối nhân sự thay thế.",
+    },
+    {
+      id: "SRC-102",
+      registrationId: "REG-PREV-003",
+      shiftId: "case_swap_test_today",
+      employeeId: "u1",
+      requestedSkillTagId: "sk-tuvan",
+      reason: "Trùng lịch thi học kỳ (Đã thu hồi sau khi đổi được lịch thi).",
+      submittedAt: new Date(Date.now() - 3 * 24 * 3600 * 1000),
+      status: "WITHDRAWN",
+      withdrawnAt: new Date(Date.now() - 2 * 24 * 3600 * 1000 + 3600 * 1000),
+      withdrawnBy: "u1",
     },
   ]);
   const [attendanceTickets, setAttendanceTickets] = useState<AttendanceTicket[]>([
@@ -2206,6 +2544,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  const getShiftRegistrationCancelRequestHistory = (registrationId: string) => {
+    return shiftRegistrationCancelRequests.filter(
+      (cr) => cr.registrationId === registrationId
+    );
+  };
+
   const submitShiftRegistrationCancelRequest = (
     shiftId: string,
     reason: string
@@ -2229,7 +2573,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    const registrationId = shift.registrationId || `REG-${shift.id.slice(-6)}`;
+    // REQUIREMENT 9: Do NOT create a production Cancellation Request using fallback REG-${shift.id.slice(-6)}
+    if (!shift.registrationId) {
+      return {
+        success: false,
+        message: "Không xác định được mã đăng ký ca.",
+      };
+    }
+    const registrationId = shift.registrationId;
     const currentEmployeeId = user?.id || "u1";
 
     if (!reason || !reason.trim()) {
@@ -2251,12 +2602,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    // REQUIREMENT 10: requestedSkillTagId must contain stable skill ID (e.g. "sk-tuvan")
+    const targetSkillTagId =
+      shift.requestedSkillTagId && shift.requestedSkillTagId.startsWith("sk-")
+        ? shift.requestedSkillTagId
+        : shift.slots?.find(
+            (slot) => slot.skillTag === shift.requestedSkillTagId || slot.skillTag === shift.skillTag
+          )?.skillTagId ||
+          (shift.skillTag === "Tư vấn" ? "sk-tuvan" : shift.skillTag === "Thu ngân" ? "sk-thungan" : shift.requestedSkillTagId || shift.skillTag);
+
     const newRequest: ShiftRegistrationCancelRequest = {
       id: `SRC-${Date.now().toString().slice(-4)}`,
       registrationId,
       shiftId: shift.id,
       employeeId: currentEmployeeId,
-      requestedSkillTagId: shift.requestedSkillTagId || shift.skillTag,
+      requestedSkillTagId: targetSkillTagId,
       reason: reason.trim(),
       submittedAt: new Date(),
       status: "PENDING",
@@ -2264,17 +2624,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     setShiftRegistrationCancelRequests((prev) => [newRequest, ...prev]);
 
-    // Update shift with stable registrationId if not present
-    if (!shift.registrationId) {
-      setAvailableShifts((prev) =>
-        prev.map((s) => (s.id === shift.id ? { ...s, registrationId } : s))
-      );
-    }
-
     return {
       success: true,
       message: "Đã gửi yêu cầu hủy đăng ký. Yêu cầu đang chờ Quản lý xử lý.",
       request: newRequest,
+    };
+  };
+
+  const withdrawShiftRegistrationCancelRequest = (
+    requestId: string
+  ): { success: boolean; message: string } => {
+    const currentEmployeeId = user?.id || "u1";
+    const request = shiftRegistrationCancelRequests.find((cr) => cr.id === requestId);
+
+    if (!request) {
+      return { success: false, message: "Không tìm thấy yêu cầu hủy đăng ký ca." };
+    }
+
+    if (request.employeeId !== currentEmployeeId) {
+      return { success: false, message: "Bạn không có quyền thu hồi yêu cầu này." };
+    }
+
+    if (request.status === "APPROVED" || request.status === "REJECTED") {
+      return { success: false, message: "Yêu cầu đã được Quản lý xử lý và không thể thu hồi." };
+    }
+
+    if (request.status === "WITHDRAWN") {
+      return { success: false, message: "Yêu cầu này đã được thu hồi trước đó." };
+    }
+
+    if (request.status === "AUTO_REJECTED") {
+      return { success: false, message: "Yêu cầu không còn hiệu lực và không thể thu hồi." };
+    }
+
+    if (request.status !== "PENDING") {
+      return { success: false, message: "Yêu cầu không ở trạng thái Chờ xử lý để có thể thu hồi." };
+    }
+
+    // Update request status to WITHDRAWN
+    setShiftRegistrationCancelRequests((prev) =>
+      prev.map((cr) =>
+        cr.id === requestId
+          ? {
+              ...cr,
+              status: "WITHDRAWN" as ShiftRegistrationCancelRequestStatus,
+              withdrawnAt: new Date(),
+              withdrawnBy: currentEmployeeId,
+            }
+          : cr
+      )
+    );
+
+    // CRITICAL: DO NOT change shift.status, rosterStatus, slots, currentStaff, quota!
+    return {
+      success: true,
+      message: "Đã thu hồi yêu cầu hủy đăng ký ca.",
     };
   };
 
@@ -2372,7 +2776,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
 
       // 2. Shift registration status becomes 'rejected'
-      // 3. Release slot quota IF registrationCountsTowardQuota !== false
+      // 3. Release slot quota IF registrationCountsTowardQuota !== false AND exact requested Skill slot exists
       setAvailableShifts((prev) =>
         prev.map((s) => {
           if (s.id === cancelReq.shiftId) {
@@ -2380,15 +2784,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             let updatedSlots = s.slots;
             let updatedCurrentStaff = s.currentStaff;
 
-            if (countsTowardQuota) {
-              const skillTagToRelease = cancelReq.requestedSkillTagId || s.requestedSkillTagId || s.skillTag;
-              if (s.slots && s.slots.length > 0) {
-                updatedSlots = s.slots.map((slot) => {
-                  if (
-                    slot.skillTag === skillTagToRelease ||
-                    slot.skillTagId === skillTagToRelease ||
-                    slot.title?.includes(skillTagToRelease)
-                  ) {
+            if (countsTowardQuota && s.slots && s.slots.length > 0) {
+              const targetSkillId = cancelReq.requestedSkillTagId;
+              const exactSlotIndex = s.slots.findIndex(
+                (slot) => slot.skillTagId === targetSkillId
+              );
+
+              if (exactSlotIndex !== -1) {
+                updatedSlots = s.slots.map((slot, idx) => {
+                  if (idx === exactSlotIndex) {
                     return {
                       ...slot,
                       current: Math.max(0, slot.current - 1),
@@ -2396,8 +2800,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   }
                   return slot;
                 });
+                updatedCurrentStaff = Math.max(0, (s.currentStaff || 1) - 1);
               }
-              updatedCurrentStaff = Math.max(0, (s.currentStaff || 1) - 1);
             }
 
             return {
@@ -2514,6 +2918,483 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     return { success: true, message: "Đã chốt đội hình ca (PUBLISHED)!" };
+  };
+
+  const [shiftCancelQaDiagnostic, setShiftCancelQaDiagnostic] = useState<ShiftCancelQaDiagnostic | null>(null);
+
+  const resetShiftCancelQa = () => {
+    // Restore test shifts to clean initial baseline
+    setAvailableShifts((prev) =>
+      prev.map((s) => {
+        if (s.id === "shift_pending_roster_cancel") {
+          return {
+            ...s,
+            status: "pending" as ShiftStatus,
+            rosterStatus: "PENDING_APPROVAL" as ShiftRosterStatus,
+            registrationId: "REG-CANCEL-001",
+            currentStaff: 3,
+            maxStaff: 5,
+            requestedSkillTagId: "sk-tuvan",
+            registrationCountsTowardQuota: true,
+            slots: [
+              {
+                id: "slot_cancel_001_tuvan",
+                skillTagId: "sk-tuvan",
+                skillTag: "Tư vấn",
+                title: "Tư vấn bán hàng",
+                current: 2,
+                max: 3,
+              },
+              {
+                id: "slot_cancel_001_thungan",
+                skillTagId: "sk-thungan",
+                skillTag: "Thu ngân",
+                title: "Thu ngân",
+                current: 1,
+                max: 2,
+              },
+            ],
+          };
+        }
+        if (s.id === "shift_probation_cancel") {
+          return {
+            ...s,
+            status: "pending" as ShiftStatus,
+            rosterStatus: "PENDING_APPROVAL" as ShiftRosterStatus,
+            registrationId: "REG-PROBATION-001",
+            currentStaff: 2,
+            maxStaff: 4,
+            requestedSkillTagId: "sk-thungan",
+            registrationCountsTowardQuota: false,
+            slots: [
+              {
+                id: "slot_probation_thungan",
+                skillTagId: "sk-thungan",
+                skillTag: "Thu ngân",
+                title: "Thu ngân",
+                current: 2,
+                max: 4,
+              },
+            ],
+          };
+        }
+        if (s.id === "case_pending_today") {
+          return {
+            ...s,
+            status: "pending" as ShiftStatus,
+            rosterStatus: "OPEN_FOR_REGISTRATION" as ShiftRosterStatus,
+            registrationId: "REG-DIRECT-001",
+          };
+        }
+        return s;
+      })
+    );
+
+    // Remove any test requests for REG-CANCEL-001 and REG-PROBATION-001
+    setShiftRegistrationCancelRequests((prev) =>
+      prev.filter(
+        (cr) =>
+          cr.registrationId !== "REG-CANCEL-001" &&
+          cr.registrationId !== "REG-PROBATION-001"
+      )
+    );
+
+    setShiftCancelQaDiagnostic(null);
+  };
+
+  const applyShiftCancelQaScenario = (
+    scenarioId: ShiftCancelQaScenarioId
+  ): ShiftCancelQaDiagnostic => {
+    resetShiftCancelQa();
+
+    const targetShiftId = "shift_pending_roster_cancel";
+    const regId = "REG-CANCEL-001";
+    const currentEmpId = user?.id || "u1";
+
+    let diagnostic: ShiftCancelQaDiagnostic = {
+      scenarioId,
+      title: "",
+      targetShiftId,
+      registrationId: regId,
+      expectedResult: "",
+    };
+
+    switch (scenarioId) {
+      case "QA-SRC-01": {
+        diagnostic = {
+          scenarioId,
+          title: "Open Registration — Direct Cancel Baseline",
+          targetShiftId: "case_pending_today",
+          registrationId: "REG-DIRECT-001",
+          expectedResult: "Ca OPEN_FOR_REGISTRATION cho phép hủy trực tiếp mà không cần tạo yêu cầu.",
+        };
+        break;
+      }
+      case "QA-SRC-02": {
+        diagnostic = {
+          scenarioId,
+          title: "Pending Approval — Eligible to Request Cancellation",
+          targetShiftId,
+          registrationId: regId,
+          expectedResult: "Ca PENDING_APPROVAL ở trạng thái Chờ duyệt, hiển thị nút 'Yêu cầu hủy đăng ký'.",
+        };
+        break;
+      }
+      case "QA-SRC-03": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-03-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Lý do QA-SRC-03: Bận lịch học đột xuất tuần tới",
+          submittedAt: new Date(),
+          status: "PENDING",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Submit Cancellation Request — Pending State",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "PENDING",
+          expectedResult: "Yêu cầu hủy ở trạng thái PENDING. Đăng ký ca vẫn pending, nút chuyển thành 'Đã gửi yêu cầu hủy' kèm 'Thu hồi yêu cầu'.",
+        };
+        break;
+      }
+      case "QA-SRC-04": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-04-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Yêu cầu hủy ban đầu",
+          submittedAt: new Date(),
+          status: "PENDING",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Duplicate Request Guard",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "PENDING",
+          expectedResult: "Hệ thống chặn tạo yêu cầu hủy trùng lặp khi đã có yêu cầu PENDING.",
+        };
+        break;
+      }
+      case "QA-SRC-05": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-05-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "QA-SRC-05: Quản lý phê duyệt hủy ca",
+          submittedAt: new Date(),
+          status: "APPROVED",
+          decidedAt: new Date(),
+          decidedBy: "Nguyễn Minh Anh (CHT)",
+          managerNote: "Đã duyệt yêu cầu hủy ca.",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        // Shift rejected & quota released
+        setAvailableShifts((prev) =>
+          prev.map((s) => {
+            if (s.id === targetShiftId) {
+              const updatedSlots = s.slots?.map((sl) =>
+                sl.skillTagId === "sk-tuvan" ? { ...sl, current: Math.max(0, sl.current - 1) } : sl
+              );
+              return {
+                ...s,
+                status: "rejected" as ShiftStatus,
+                currentStaff: Math.max(0, (s.currentStaff || 1) - 1),
+                slots: updatedSlots,
+                statusUpdatedAt: new Date(),
+                cancelReason: "Yêu cầu hủy đăng ký được duyệt",
+              };
+            }
+            return s;
+          })
+        );
+
+        diagnostic = {
+          scenarioId,
+          title: "Manager Approves Cancellation",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "APPROVED",
+          expectedResult: "Yêu cầu hủy APPROVED. Đăng ký ca thành 'rejected', hoàn trả 1 suất kỹ năng Tư vấn (2 -> 1).",
+        };
+        break;
+      }
+      case "QA-SRC-06": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-06-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "QA-SRC-06: Xin hủy ca",
+          submittedAt: new Date(),
+          status: "REJECTED",
+          decidedAt: new Date(),
+          decidedBy: "Nguyễn Minh Anh (CHT)",
+          managerNote: "Cửa hàng không đủ nhân sự thay thế.",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Manager Rejects Cancellation",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "REJECTED",
+          expectedResult: "Yêu cầu hủy REJECTED. Đăng ký ca vẫn pending, số lượng slot giữ nguyên.",
+        };
+        break;
+      }
+      case "QA-SRC-07": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-07-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "QA-SRC-07: Race condition - Registration wins",
+          submittedAt: new Date(),
+          status: "AUTO_REJECTED",
+          decidedAt: new Date(),
+          systemReason: "Yêu cầu không còn hiệu lực vì đăng ký ca đã được xử lý.",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        setAvailableShifts((prev) =>
+          prev.map((s) =>
+            s.id === targetShiftId
+              ? { ...s, status: "approved" as ShiftStatus, assignedSkillTagId: "sk-tuvan" }
+              : s
+          )
+        );
+
+        diagnostic = {
+          scenarioId,
+          title: "Registration Approval Wins Race",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "AUTO_REJECTED",
+          expectedResult: "Đăng ký ca được duyệt trước -> Yêu cầu hủy tự động thành AUTO_REJECTED.",
+        };
+        break;
+      }
+      case "QA-SRC-08": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-08-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "QA-SRC-08: Race condition - Cancellation wins",
+          submittedAt: new Date(),
+          status: "APPROVED",
+          decidedAt: new Date(),
+          decidedBy: "Nguyễn Minh Anh (CHT)",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        setAvailableShifts((prev) =>
+          prev.map((s) =>
+            s.id === targetShiftId
+              ? { ...s, status: "rejected" as ShiftStatus }
+              : s
+          )
+        );
+
+        diagnostic = {
+          scenarioId,
+          title: "Cancellation Approval Wins Race",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "APPROVED",
+          expectedResult: "Hủy ca được duyệt trước -> Đăng ký thành rejected. Duyệt ca tiếp theo sẽ bị chặn an toàn.",
+        };
+        break;
+      }
+      case "QA-SRC-09": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-09-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "QA-SRC-09: Publish race",
+          submittedAt: new Date(),
+          status: "AUTO_REJECTED",
+          decidedAt: new Date(),
+          systemReason: "Yêu cầu không còn hiệu lực vì ca đã được chốt.",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        setAvailableShifts((prev) =>
+          prev.map((s) =>
+            s.id === targetShiftId
+              ? { ...s, rosterStatus: "PUBLISHED" as ShiftRosterStatus }
+              : s
+          )
+        );
+
+        diagnostic = {
+          scenarioId,
+          title: "Shift Published Before Decision",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "AUTO_REJECTED",
+          expectedResult: "Ca chuyển sang PUBLISHED -> Yêu cầu hủy tự động thành AUTO_REJECTED.",
+        };
+        break;
+      }
+      case "QA-SRC-10": {
+        const pShiftId = "shift_probation_cancel";
+        const pRegId = "REG-PROBATION-001";
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-10-${Date.now().toString().slice(-4)}`,
+          registrationId: pRegId,
+          shiftId: pShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-thungan",
+          reason: "QA-SRC-10: Thử việc hủy ca",
+          submittedAt: new Date(),
+          status: "APPROVED",
+          decidedAt: new Date(),
+          decidedBy: "Nguyễn Minh Anh (CHT)",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        // Registration becomes rejected, BUT slots and currentStaff are NOT modified
+        setAvailableShifts((prev) =>
+          prev.map((s) =>
+            s.id === pShiftId
+              ? { ...s, status: "rejected" as ShiftStatus }
+              : s
+          )
+        );
+
+        diagnostic = {
+          scenarioId,
+          title: "Probation Registration — No False Quota Release",
+          targetShiftId: pShiftId,
+          registrationId: pRegId,
+          activeRequestId: req.id,
+          requestStatus: "APPROVED",
+          expectedResult: "Nhân viên thử việc hủy ca -> Đăng ký ca chuyển thành rejected, nhưng slot quota KHÔNG bị xả giảm sai.",
+        };
+        break;
+      }
+      case "QA-SRC-WD-01": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-WD1-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Đã xin hủy ca",
+          submittedAt: new Date(Date.now() - 3600 * 1000),
+          status: "WITHDRAWN",
+          withdrawnAt: new Date(),
+          withdrawnBy: currentEmpId,
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Employee Withdraws Cancellation Request",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "WITHDRAWN",
+          expectedResult: "Nhân viên thu hồi yêu cầu: Ticket thành WITHDRAWN. Đăng ký ca vẫn pending & PENDING_APPROVAL. Quota không đổi.",
+        };
+        break;
+      }
+      case "QA-SRC-WD-02": {
+        const oldReq: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-OLD-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Yêu cầu cũ đã thu hồi",
+          submittedAt: new Date(Date.now() - 7200 * 1000),
+          status: "WITHDRAWN",
+          withdrawnAt: new Date(Date.now() - 3600 * 1000),
+          withdrawnBy: currentEmpId,
+        };
+        const newReq: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-NEW-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Yêu cầu mới sau khi thu hồi lần 1",
+          submittedAt: new Date(),
+          status: "PENDING",
+        };
+        setShiftRegistrationCancelRequests((prev) => [newReq, oldReq, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Resubmit Cancellation Request After Withdraw",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: newReq.id,
+          requestStatus: "PENDING",
+          expectedResult: "Sau khi thu hồi (WITHDRAWN), nhân viên được phép tạo yêu cầu hủy mới với ID mới.",
+        };
+        break;
+      }
+      case "QA-SRC-WD-03": {
+        const req: ShiftRegistrationCancelRequest = {
+          id: `SRC-QA-WD3-${Date.now().toString().slice(-4)}`,
+          registrationId: regId,
+          shiftId: targetShiftId,
+          employeeId: currentEmpId,
+          requestedSkillTagId: "sk-tuvan",
+          reason: "Yêu cầu đã được quản lý duyệt",
+          submittedAt: new Date(Date.now() - 3600 * 1000),
+          status: "APPROVED",
+          decidedAt: new Date(),
+          decidedBy: "Nguyễn Minh Anh (CHT)",
+        };
+        setShiftRegistrationCancelRequests((prev) => [req, ...prev]);
+
+        diagnostic = {
+          scenarioId,
+          title: "Cannot Withdraw Decided Request",
+          targetShiftId,
+          registrationId: regId,
+          activeRequestId: req.id,
+          requestStatus: "APPROVED",
+          expectedResult: "Yêu cầu đã APPROVED/REJECTED không thể thu hồi: 'Yêu cầu đã được Quản lý xử lý và không thể thu hồi.'",
+        };
+        break;
+      }
+      default:
+        break;
+    }
+
+    setShiftCancelQaDiagnostic(diagnostic);
+    return diagnostic;
   };
 
   const acknowledgeDispatch = (shiftId: string) => {
@@ -3044,10 +3925,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         addAdhocShift,
         shiftRegistrationCancelRequests,
         submitShiftRegistrationCancelRequest,
+        withdrawShiftRegistrationCancelRequest,
         getShiftRegistrationCancelRequest,
+        getShiftRegistrationCancelRequestHistory,
         processShiftRegistrationCancelRequest,
         simulateRegistrationApproval,
         simulateShiftPublish,
+        applyShiftCancelQaScenario,
+        resetShiftCancelQa,
+        shiftCancelQaDiagnostic,
+        setShiftRegistrationCancelRequests,
         leaveRequests,
         leaveCancelRequests,
         leavePolicy,
