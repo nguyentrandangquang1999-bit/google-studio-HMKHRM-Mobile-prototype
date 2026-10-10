@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import ScreenHeader from "@/components/ScreenHeader";
-import { useApp, Shift } from "@/context/AppContext";
+import { useApp, Shift, CR_DEMO_SHIFT_IDS, resolveSkillLabel } from "@/context/AppContext";
+import { APP_BUILD_ID } from "@/buildInfo";
 import {
   ChevronLeft,
   ChevronRight,
@@ -408,6 +409,8 @@ export default function Schedule() {
     applyShiftCancelQaScenario,
     resetShiftCancelQa,
     shiftCancelQaDiagnostic,
+    isShiftCancelQaFocusMode,
+    setIsShiftCancelQaFocusMode,
     qaNotificationScenario,
     setQaDiagnosticResult,
   } = useApp();
@@ -1272,26 +1275,70 @@ export default function Schedule() {
                     </span>
                     <span className="text-xs font-bold text-slate-200">Shift Cancel QA Scenario</span>
                   </div>
-                  <span className="text-[10px] text-slate-400 font-mono">CR-Pending-Cancel</span>
+                  <span className="text-[9px] text-amber-300 font-mono bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+                    Build: {APP_BUILD_ID}
+                  </span>
                 </div>
 
                 <div className="space-y-2.5">
+                  {/* CR Demo Focus Mode Switch */}
+                  <div className="flex items-center justify-between py-1.5 px-2.5 bg-slate-800/80 rounded-xl border border-slate-700/80">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] text-slate-300 font-bold">CR Demo Focus — 6 example cases</span>
+                      <span className="text-[9px] text-slate-400">
+                        {isShiftCancelQaFocusMode ? "Chỉ hiển thị 6 ca thử nghiệm chuẩn" : "Hiển thị toàn bộ ca làm việc (Dataset mở rộng)"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsShiftCancelQaFocusMode(!isShiftCancelQaFocusMode)}
+                      className={cn(
+                        "px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all shadow-xs",
+                        isShiftCancelQaFocusMode
+                          ? "bg-amber-500 text-slate-950 hover:bg-amber-400"
+                          : "bg-slate-700 text-slate-200 hover:bg-slate-600"
+                      )}
+                    >
+                      {isShiftCancelQaFocusMode ? "BẬT" : "TẮT"}
+                    </button>
+                  </div>
+
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between">
                       <label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
                         Chọn kịch bản kiểm thử:
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          resetShiftCancelQa();
-                          setQaShiftCancelScenario("NONE");
-                          setToast({ message: "Đã khôi phục dữ liệu ca và yêu cầu hủy về trạng thái ban đầu.", type: "info" });
-                        }}
-                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold underline transition-colors flex items-center gap-1"
-                      >
-                        <RotateCcw className="w-3 h-3" /> Reset QA
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {qaShiftCancelScenario !== "NONE" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const diag = applyShiftCancelQaScenario(qaShiftCancelScenario as any);
+                              setToast({ message: `Đã chạy lại (re-run) kịch bản ${diag.scenarioId}`, type: "info" });
+                            }}
+                            className="text-[10px] text-sky-400 hover:text-sky-300 font-bold underline transition-colors flex items-center gap-0.5"
+                          >
+                            <RefreshCw className="w-2.5 h-2.5" /> Re-run scenario
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetShiftCancelQa();
+                            setQaShiftCancelScenario("NONE");
+                            setRegSearchQuery("");
+                            setSelectedBranchFilter("");
+                            setSelectedSkillFilter("");
+                            setOnlyFitFilter(false);
+                            setIsShiftCancelQaFocusMode(true);
+                            setActiveTab("register");
+                            setToast({ message: "Đã khôi phục dữ liệu ca chuẩn và làm mới toàn bộ bộ lọc.", type: "info" });
+                          }}
+                          className="text-[10px] text-amber-400 hover:text-amber-300 font-bold underline transition-colors flex items-center gap-1"
+                        >
+                          <RotateCcw className="w-3 h-3" /> Reset QA
+                        </button>
+                      </div>
                     </div>
                     <select
                       value={qaShiftCancelScenario}
@@ -1316,7 +1363,7 @@ export default function Schedule() {
                       }}
                       className="bg-slate-800 border border-slate-700 text-slate-100 rounded-xl px-2.5 py-2 text-xs focus:ring-1 focus:ring-amber-500 outline-none"
                     >
-                      <option value="NONE">-- Chọn kịch bản QA --</option>
+                      <option value="NONE">-- Chọn kịch bản QA (16 kịch bản) --</option>
                       <option value="QA-SRC-01">QA-SRC-01: Open Registration — Direct Cancel baseline</option>
                       <option value="QA-SRC-02">QA-SRC-02: Pending Approval — Eligible to request cancellation</option>
                       <option value="QA-SRC-03">QA-SRC-03: Submit Request — Registration remains Pending</option>
@@ -1328,198 +1375,446 @@ export default function Schedule() {
                       <option value="QA-SRC-09">QA-SRC-09: Shift Published Before Decision</option>
                       <option value="QA-SRC-10">QA-SRC-10: Probation Registration — No false quota release</option>
                       <option value="QA-SRC-WD-01">QA-SRC-WD-01: Employee Withdraws Request (WITHDRAWN)</option>
-                      <option value="QA-SRC-WD-02">QA-SRC-WD-02: Resubmit Request After Withdraw</option>
-                      <option value="QA-SRC-WD-03">QA-SRC-WD-03: Cannot Withdraw Decided Request</option>
+                      <option value="QA-SRC-WD-02">QA-SRC-WD-02: Withdraw Success — Registration Remains Pending</option>
+                      <option value="QA-SRC-WD-03">QA-SRC-WD-03: Withdraw Wins Race (Blocks Manager Decision)</option>
+                      <option value="QA-SRC-WD-04">QA-SRC-WD-04: Manager Approve Wins Race (Blocks Withdraw)</option>
+                      <option value="QA-SRC-WD-05">QA-SRC-WD-05: Manager Reject Wins Race (Blocks Withdraw)</option>
+                      <option value="QA-SRC-WD-06">QA-SRC-WD-06: Withdraw Then Resubmit New Request</option>
                     </select>
                   </div>
 
-                  {/* Diagnostic banner if active */}
+                  {/* Diagnostic panel if active */}
                   {shiftCancelQaDiagnostic && (
-                    <div className="p-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-[11px] space-y-1">
-                      <div className="flex items-center justify-between text-amber-400 font-bold">
-                        <span>{shiftCancelQaDiagnostic.scenarioId}: {shiftCancelQaDiagnostic.title}</span>
-                        {shiftCancelQaDiagnostic.requestStatus && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-slate-700 text-slate-200">
-                            {shiftCancelQaDiagnostic.requestStatus}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-slate-300 text-[10px] leading-tight">
-                        {shiftCancelQaDiagnostic.expectedResult}
-                      </p>
+                    <div className="p-3 bg-slate-800/95 border border-slate-700 rounded-xl text-[11px] space-y-2">
+                      {(() => {
+                        const targetShiftId = shiftCancelQaDiagnostic.targetShiftId;
+                        const regId = shiftCancelQaDiagnostic.registrationId;
+                        const targetReqId = shiftCancelQaDiagnostic.activeRequestId;
+
+                        const currentTargetReq = targetReqId
+                          ? shiftRegistrationCancelRequests.find((cr) => cr.id === targetReqId)
+                          : (regId ? shiftRegistrationCancelRequests.find((cr) => cr.registrationId === regId && cr.status === "PENDING") : null);
+
+                        const currentReqStatus = currentTargetReq?.status || (targetReqId ? "NOT_FOUND" : "CHƯA TẠO (NONE)");
+
+                        return (
+                          <>
+                            <div className="flex items-center justify-between text-amber-400 font-bold">
+                              <span>{shiftCancelQaDiagnostic.scenarioId}: {shiftCancelQaDiagnostic.title}</span>
+                              <span className={cn(
+                                "px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase",
+                                currentReqStatus === "PENDING" ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" :
+                                currentReqStatus === "APPROVED" ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40" :
+                                currentReqStatus === "REJECTED" ? "bg-rose-500/20 text-rose-300 border border-rose-500/40" :
+                                currentReqStatus === "WITHDRAWN" ? "bg-slate-700 text-slate-300 border border-slate-600" :
+                                currentReqStatus === "AUTO_REJECTED" ? "bg-purple-500/20 text-purple-300 border border-purple-500/40" :
+                                "bg-slate-700 text-slate-400"
+                              )}>
+                                {currentReqStatus}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-slate-800 font-mono">
+                              <div>Target Shift: <span className="text-white font-bold">{targetShiftId || "N/A"}</span></div>
+                              <div>Registration: <span className="text-white font-bold">{regId || "N/A"}</span></div>
+                              <div>Request ID: <span className="text-white font-bold">{targetReqId || (currentTargetReq?.id || "N/A")}</span></div>
+                              <div>Status: <span className="text-amber-300 font-bold">{currentReqStatus}</span></div>
+                            </div>
+
+                            <p className="text-slate-300 text-[10px] leading-tight">
+                              <strong className="text-amber-400">Kỳ vọng:</strong> {shiftCancelQaDiagnostic.expectedResult}
+                            </p>
+
+                            {/* Deterministic QA Action Simulator */}
+                            <div className="pt-2 border-t border-slate-700/80 space-y-1.5">
+                              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
+                                ⚡ Thao tác kiểm thử (QA Actions):
+                              </span>
+
+                              {/* Case 1: Pending Request actions */}
+                              {currentTargetReq && currentTargetReq.status === "PENDING" && (
+                                <div className="flex flex-wrap gap-2 pt-0.5">
+                                  <button
+                                    onClick={() => {
+                                      const res = withdrawShiftRegistrationCancelRequest(currentTargetReq.id);
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 min-w-[120px] py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] rounded-lg transition-all"
+                                  >
+                                    [QA] Thu hồi (Withdraw)
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 min-w-[120px] py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] rounded-lg transition-all"
+                                  >
+                                    [QA] Duyệt hủy (Approve)
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "REJECT", "Thiếu nhân sự trực ca");
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 min-w-[120px] py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px] rounded-lg transition-all"
+                                  >
+                                    [QA] Từ chối (Reject)
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Race Scenarios specific buttons */}
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-07" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      const res = simulateRegistrationApproval(targetShiftId);
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Duyệt đăng ký trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Thử duyệt hủy sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-08" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Duyệt hủy trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const res = simulateRegistrationApproval(targetShiftId);
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Thử duyệt đăng ký sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-09" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      const res = simulateShiftPublish(targetShiftId);
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Chốt ca (Publish) trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Thử duyệt hủy sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-WD-03" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = withdrawShiftRegistrationCancelRequest(currentTargetReq.id);
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Nhân viên thu hồi trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Quản lý cố duyệt sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-WD-04" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "APPROVE");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Quản lý duyệt trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = withdrawShiftRegistrationCancelRequest(currentTargetReq.id);
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Nhân viên cố thu hồi sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-WD-05" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = processShiftRegistrationCancelRequest(currentTargetReq.id, "REJECT", "Từ chối");
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Quản lý từ chối trước
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = withdrawShiftRegistrationCancelRequest(currentTargetReq.id);
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Nhân viên cố thu hồi sau
+                                  </button>
+                                </div>
+                              )}
+
+                              {shiftCancelQaDiagnostic.scenarioId === "QA-SRC-WD-06" && (
+                                <div className="flex gap-2 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      if (currentTargetReq) {
+                                        const res = withdrawShiftRegistrationCancelRequest(currentTargetReq.id);
+                                        setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                      }
+                                    }}
+                                    className="flex-1 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 1: Thu hồi yêu cầu
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const res = submitShiftRegistrationCancelRequest(targetShiftId, "Đăng ký hủy lại lần 2");
+                                      setToast({ message: res.message, type: res.success ? "success" : "error" });
+                                    }}
+                                    className="flex-1 py-1.5 bg-[#558BAD] hover:bg-[#446E8A] text-white font-bold text-[10px] rounded-lg"
+                                  >
+                                    [QA] Bước 2: Gửi yêu cầu hủy mới
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
-
-                  {/* QA Manager Decision Simulator Controls */}
-                  {(() => {
-                    const activePendingReq = shiftRegistrationCancelRequests.find((cr) => cr.status === "PENDING");
-                    if (!activePendingReq) return null;
-
-                    return (
-                      <div className="bg-slate-800/90 border border-amber-500/30 rounded-xl p-2.5 mt-2 space-y-2">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-bold text-amber-400">⚡ Giả lập Quản lý xử lý đơn (QA ONLY):</span>
-                          <span className="font-mono text-slate-400">{activePendingReq.id}</span>
-                        </div>
-                        <p className="text-[10px] text-slate-300">
-                          Ca: <span className="font-bold text-white">{activePendingReq.shiftId}</span> • Lý do: "{activePendingReq.reason}"
-                        </p>
-                        <div className="flex gap-2 pt-1">
-                          <button
-                            onClick={() => {
-                              const res = processShiftRegistrationCancelRequest(activePendingReq.id, "APPROVE");
-                              setToast({ message: res.message, type: "success" });
-                            }}
-                            className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg transition-all"
-                          >
-                            [QA] Duyệt hủy (Approve)
-                          </button>
-                          <button
-                            onClick={() => {
-                              const res = processShiftRegistrationCancelRequest(activePendingReq.id, "REJECT", "Thiếu người trực ca");
-                              setToast({ message: res.message, type: "info" });
-                            }}
-                            className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] rounded-lg transition-all"
-                          >
-                            [QA] Từ chối hủy (Reject)
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
                 </div>
               </div>
 
-              {/* Hard-cap Time-fence Error UI */}
-              {(() => {
-                return (
-                  <>
-                    <div className="flex items-center justify-between bg-white border border-slate-100 p-1.5 rounded-2xl mb-8 shadow-soft">
-                      <button
-                        onClick={() => setWeekOffset((prev) => prev - 1)}
-                        className="w-10 h-10 flex items-center justify-center text-slate-600 bg-slate-50 shadow-soft rounded-xl hover:bg-slate-100 transition-all active:scale-95 border border-slate-100"
-                      >
-                        <ChevronLeft className="w-5 h-5" />
-                      </button>
-                      <div className="flex flex-col items-center">
-                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.15em] mb-0.5">
-                          {weekOffset === 1 ? "Đang mở đăng ký ca" : 
-                           weekOffset === 0 ? "Lịch đã chốt (Chỉ xem)" :
-                           weekOffset > 1 ? "Chưa mở đăng ký (Xem trước)" :
-                           "Quá khứ (Chỉ xem)"}
-                        </span>
-                        <div className="text-[13px] font-bold text-slate-900 uppercase tracking-tight whitespace-nowrap">
-                          Tuần {targetWeekStart instanceof Date ? Math.ceil(targetWeekStart.getDate() / 7) : "?"} Tháng {targetWeekStart instanceof Date ? format(targetWeekStart, "M") : ""} <span className="opacity-70 ml-1">({targetWeekStart instanceof Date ? format(targetWeekStart, "dd/MM") : ""} - {targetWeekStart instanceof Date ? format(addDays(targetWeekStart, 6), "dd/MM") : ""})</span>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setWeekOffset((prev) => prev + 1)}
-                        className="w-10 h-10 flex items-center justify-center text-slate-600 bg-slate-50 shadow-soft rounded-xl hover:bg-slate-100 transition-all active:scale-95 border border-slate-100"
-                      >
-                        <ChevronRight className="w-5 h-5" />
-                      </button>
+              {/* Focus Mode vs Standard Registration UI */}
+              {isShiftCancelQaFocusMode ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-widest bg-amber-500 text-slate-950 uppercase">
+                        MOCK / QA ONLY
+                      </span>
+                      <span className="text-xs font-bold text-amber-900">
+                        CR Demo Focus — 6 example cases
+                      </span>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsShiftCancelQaFocusMode(false)}
+                      className="text-[10px] text-amber-700 hover:text-amber-900 font-bold underline"
+                    >
+                      Xem toàn bộ dataset
+                    </button>
+                  </div>
 
-                    {/* Registration Search & Filter Controls */}
-                    <div className="space-y-3 mb-4">
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            placeholder="Tìm ca, chi nhánh..."
-                            value={regSearchQuery}
-                            onChange={(e) => setRegSearchQuery(e.target.value)}
-                            className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all placeholder:text-slate-400 text-slate-900"
-                          />
-                          {regSearchQuery && (
-                            <button
-                              onClick={() => setRegSearchQuery("")}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-full"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                        <button
+                  <div className="space-y-3 px-0.5">
+                    {CR_DEMO_SHIFT_IDS.map((crId) => {
+                      const shift = availableShifts.find((s) => s.id === crId);
+                      if (!shift) return null;
+
+                      const regId = shift.registrationId;
+                      const hasPendingCancel = Boolean(
+                        regId ? getShiftRegistrationCancelRequest(regId) : false
+                      );
+
+                      return (
+                        <SharedShiftCard
+                          key={shift.id}
+                          shift={shift}
+                          user={user}
+                          isDisabled={false}
+                          isPast={false}
+                          isPreview={false}
+                          hasPendingCancel={hasPendingCancel}
                           onClick={() => {
-                            setTempSelectedStatuses(selectedStatuses);
-                            setTempBranchFilter(selectedBranchFilter);
-                            setTempSkillFilter(selectedSkillFilter);
-                            setTempOnlyFitFilter(onlyFitFilter);
-                            setTempTimeFrom(timeFrom);
-                            setTempTimeTo(timeTo);
-                            setIsFilterModalOpen(true);
+                            if (hasLeaveConflict(shift.date)) {
+                              setToast({ message: "Trùng lịch nghỉ phép.", type: "error" });
+                              return;
+                            }
+                            setShiftDetailModal(shift);
+                            const firstAvailableSlot = shift.slots?.find(
+                              (s) => userActiveSkills.includes(s.skillTag) && s.current < s.max
+                            );
+                            setSelectedSlotId(firstAvailableSlot?.id || null);
                           }}
-                          className={cn(
-                            "flex items-center justify-center w-[42px] h-[42px] rounded-xl border transition-all shrink-0",
-                            selectedBranchFilter || selectedSkillFilter || onlyFitFilter
-                              ? "bg-[#F0F6FA] border-[#558BAD]/30 text-[#558BAD]"
-                              : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
-                          )}
-                        >
-                          <Filter className="w-4 h-4" />
-                        </button>
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Standard Registration Week Pager & Filters */}
+                  <div className="flex items-center justify-between bg-white border border-slate-100 p-1.5 rounded-2xl mb-8 shadow-soft">
+                    <button
+                      onClick={() => setWeekOffset((prev) => prev - 1)}
+                      className="w-10 h-10 flex items-center justify-center text-slate-600 bg-slate-50 shadow-soft rounded-xl hover:bg-slate-100 transition-all active:scale-95 border border-slate-100"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <div className="flex flex-col items-center">
+                      <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.15em] mb-0.5">
+                        {weekOffset === 1 ? "Đang mở đăng ký ca" : 
+                         weekOffset === 0 ? "Lịch đã chốt (Chỉ xem)" :
+                         weekOffset > 1 ? "Chưa mở đăng ký (Xem trước)" :
+                         "Quá khứ (Chỉ xem)"}
+                      </span>
+                      <div className="text-[13px] font-bold text-slate-900 uppercase tracking-tight whitespace-nowrap">
+                        Tuần {targetWeekStart instanceof Date ? Math.ceil(targetWeekStart.getDate() / 7) : "?"} Tháng {targetWeekStart instanceof Date ? format(targetWeekStart, "M") : ""} <span className="opacity-70 ml-1">({targetWeekStart instanceof Date ? format(targetWeekStart, "dd/MM") : ""} - {targetWeekStart instanceof Date ? format(addDays(targetWeekStart, 6), "dd/MM") : ""})</span>
                       </div>
+                    </div>
+                    <button
+                      onClick={() => setWeekOffset((prev) => prev + 1)}
+                      className="w-10 h-10 flex items-center justify-center text-slate-600 bg-slate-50 shadow-soft rounded-xl hover:bg-slate-100 transition-all active:scale-95 border border-slate-100"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </div>
 
-                      {/* Quick Filter Pill Buttons */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={() => setOnlyFitFilter(prev => !prev)}
-                          className={cn(
-                            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border",
-                            onlyFitFilter
-                              ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
-                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          )}
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          Chỉ ca phù hợp
-                        </button>
-
-                        {selectedBranchFilter && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
-                            <MapPin className="w-3 h-3 text-[#558BAD]" /> {selectedBranchFilter}
-                            <button onClick={() => setSelectedBranchFilter("")} className="hover:text-[#375A72]">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        )}
-
-                        {selectedSkillFilter && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
-                            Vị trí: {selectedSkillFilter}
-                            <button onClick={() => setSelectedSkillFilter("")} className="hover:text-[#375A72]">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        )}
-
-                        {(selectedBranchFilter || selectedSkillFilter || onlyFitFilter || regSearchQuery) && (
+                  {/* Registration Search & Filter Controls */}
+                  <div className="space-y-3 mb-4">
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Tìm ca, chi nhánh..."
+                          value={regSearchQuery}
+                          onChange={(e) => setRegSearchQuery(e.target.value)}
+                          className="w-full pl-9 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#558BAD]/20 focus:border-[#558BAD] transition-all placeholder:text-slate-400 text-slate-900"
+                        />
+                        {regSearchQuery && (
                           <button
-                            onClick={() => {
-                              setSelectedBranchFilter("");
-                              setSelectedSkillFilter("");
-                              setOnlyFitFilter(false);
-                              setRegSearchQuery("");
-                            }}
-                            className="text-[10px] font-bold text-slate-500 hover:text-slate-700 ml-1 underline decoration-slate-300 underline-offset-2"
+                            onClick={() => setRegSearchQuery("")}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-full"
                           >
-                            Xoá lọc
+                            <X className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
+                      <button
+                        onClick={() => {
+                          setTempSelectedStatuses(selectedStatuses);
+                          setTempBranchFilter(selectedBranchFilter);
+                          setTempSkillFilter(selectedSkillFilter);
+                          setTempOnlyFitFilter(onlyFitFilter);
+                          setTempTimeFrom(timeFrom);
+                          setTempTimeTo(timeTo);
+                          setIsFilterModalOpen(true);
+                        }}
+                        className={cn(
+                          "flex items-center justify-center w-[42px] h-[42px] rounded-xl border transition-all shrink-0",
+                          selectedBranchFilter || selectedSkillFilter || onlyFitFilter
+                            ? "bg-[#F0F6FA] border-[#558BAD]/30 text-[#558BAD]"
+                            : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                        )}
+                      >
+                        <Filter className="w-4 h-4" />
+                      </button>
                     </div>
 
-                    {Object.keys(nextWeekShiftsByDate).length === 0 ? (
-                      <div className="bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-8 text-center my-4">
-                        <CalendarDays className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                        <p className="text-sm font-bold text-slate-700">
-                          Không tìm thấy ca phù hợp với điều kiện tìm kiếm
-                        </p>
-                        <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-                          Hãy thử tắt bộ lọc "Chỉ ca phù hợp" hoặc đổi từ khoá tìm kiếm.
-                        </p>
+                    {/* Quick Filter Pill Buttons */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => setOnlyFitFilter(prev => !prev)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border",
+                          onlyFitFilter
+                            ? "bg-[#558BAD] text-white border-[#558BAD] shadow-sm"
+                            : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                        )}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Chỉ ca phù hợp
+                      </button>
+
+                      {selectedBranchFilter && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                          <MapPin className="w-3 h-3 text-[#558BAD]" /> {selectedBranchFilter}
+                          <button onClick={() => setSelectedBranchFilter("")} className="hover:text-[#375A72]">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      )}
+
+                      {selectedSkillFilter && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#F0F6FA] text-[#558BAD] text-[10px] font-bold border border-[#558BAD]/20">
+                          Vị trí: {selectedSkillFilter}
+                          <button onClick={() => setSelectedSkillFilter("")} className="hover:text-[#375A72]">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      )}
+
+                      {(selectedBranchFilter || selectedSkillFilter || onlyFitFilter || regSearchQuery) && (
                         <button
                           onClick={() => {
                             setSelectedBranchFilter("");
@@ -1527,68 +1822,90 @@ export default function Schedule() {
                             setOnlyFitFilter(false);
                             setRegSearchQuery("");
                           }}
-                          className="mt-4 px-4 py-2 bg-[#558BAD] text-white font-bold text-xs rounded-xl transition-all active:scale-95 shadow-sm"
+                          className="text-[10px] font-bold text-slate-500 hover:text-slate-700 ml-1 underline decoration-slate-300 underline-offset-2"
                         >
-                          Xoá bộ lọc
+                          Xoá lọc
                         </button>
-                      </div>
-                    ) : (
-                      (Object.entries(nextWeekShiftsByDate).sort((a,b) => a[0].localeCompare(b[0])) as [string, Shift[]][]).map(
-                        ([dateStr, shifts]) => (
-                          <div key={dateStr} className="space-y-2">
-                            <h3 className="text-sm font-bold text-text-main pt-4 flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full bg-slate-200 block"></span>
-                              {(() => {
-                                const d = new Date(dateStr);
-                                return isNaN(d.getTime()) ? dateStr : format(d, "EEEE, dd/MM", { locale: vi });
-                              })()}
-                            </h3>
+                      )}
+                    </div>
+                  </div>
 
-                            <div className="space-y-3 px-0.5 mt-2">
-                              {(shifts as Shift[]).map((shift) => {
-                                const isDisabled = weekOffset !== 1;
-                                const regId = shift.registrationId || `REG-${shift.id.slice(-6)}`;
-                                const hasPendingCancel = Boolean(
-                                  getShiftRegistrationCancelRequest(regId) ||
-                                  shiftRegistrationCancelRequests.find((cr) => cr.shiftId === shift.id && cr.status === "PENDING")
-                                );
+                  {Object.keys(nextWeekShiftsByDate).length === 0 ? (
+                    <div className="bg-slate-50 border border-dashed border-slate-200 rounded-2xl p-8 text-center my-4">
+                      <CalendarDays className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                      <p className="text-sm font-bold text-slate-700">
+                        Không tìm thấy ca phù hợp với điều kiện tìm kiếm
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+                        Hãy thử tắt bộ lọc "Chỉ ca phù hợp" hoặc đổi từ khoá tìm kiếm.
+                      </p>
+                      <button
+                        onClick={() => {
+                          setSelectedBranchFilter("");
+                          setSelectedSkillFilter("");
+                          setOnlyFitFilter(false);
+                          setRegSearchQuery("");
+                        }}
+                        className="mt-4 px-4 py-2 bg-[#558BAD] text-white font-bold text-xs rounded-xl transition-all active:scale-95 shadow-sm"
+                      >
+                        Xoá bộ lọc
+                      </button>
+                    </div>
+                  ) : (
+                    (Object.entries(nextWeekShiftsByDate).sort((a,b) => a[0].localeCompare(b[0])) as [string, Shift[]][]).map(
+                      ([dateStr, shifts]) => (
+                        <div key={dateStr} className="space-y-2">
+                          <h3 className="text-sm font-bold text-text-main pt-4 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-slate-200 block"></span>
+                            {(() => {
+                              const d = new Date(dateStr);
+                              return isNaN(d.getTime()) ? dateStr : format(d, "EEEE, dd/MM", { locale: vi });
+                            })()}
+                          </h3>
 
-                                return (
-                                  <SharedShiftCard
-                                    key={shift.id}
-                                    shift={shift}
-                                    user={user}
-                                    isDisabled={isDisabled}
-                                    isPast={weekOffset <= 0}
-                                    isPreview={weekOffset >= 2}
-                                    hasPendingCancel={hasPendingCancel}
-                                    onClick={() => {
-                                      if (hasLeaveConflict(shift.date)) {
-                                        setToast({ message: "Trùng lịch nghỉ phép.", type: 'error' });
-                                        return;
-                                      }
-                                      setShiftDetailModal(shift);
-                                      const firstAvailableSlot =
-                                        shift.slots?.find(
-                                          (s) =>
-                                            userActiveSkills.includes(s.skillTag) &&
-                                            s.current < s.max,
-                                        );
-                                      setSelectedSlotId(
-                                        firstAvailableSlot?.id || null,
+                          <div className="space-y-3 px-0.5 mt-2">
+                            {(shifts as Shift[]).map((shift) => {
+                              const isDisabled = weekOffset !== 1;
+                              const regId = shift.registrationId;
+                              const hasPendingCancel = Boolean(
+                                regId ? getShiftRegistrationCancelRequest(regId) : false
+                              );
+
+                              return (
+                                <SharedShiftCard
+                                  key={shift.id}
+                                  shift={shift}
+                                  user={user}
+                                  isDisabled={isDisabled}
+                                  isPast={weekOffset <= 0}
+                                  isPreview={weekOffset >= 2}
+                                  hasPendingCancel={hasPendingCancel}
+                                  onClick={() => {
+                                    if (hasLeaveConflict(shift.date)) {
+                                      setToast({ message: "Trùng lịch nghỉ phép.", type: "error" });
+                                      return;
+                                    }
+                                    setShiftDetailModal(shift);
+                                    const firstAvailableSlot =
+                                      shift.slots?.find(
+                                        (s) =>
+                                          userActiveSkills.includes(s.skillTag) &&
+                                          s.current < s.max
                                       );
-                                    }}
-                                  />
-                                );
-                              })}
-                            </div>
+                                    setSelectedSlotId(
+                                      firstAvailableSlot?.id || null
+                                    );
+                                  }}
+                                />
+                              );
+                            })}
                           </div>
-                        ),
+                        </div>
                       )
-                    )}
-                  </>
-                );
-              })()}
+                    )
+                  )}
+                </>
+              )}
             </motion.div>
           )}
 
@@ -1952,7 +2269,7 @@ export default function Schedule() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-[100] flex justify-center items-end"
+            className="fixed inset-y-0 left-0 right-0 max-w-md mx-auto bg-black/60 z-[100] flex justify-center items-end overflow-hidden"
             onClick={() => setShiftDetailModal(null)}
           >
             <motion.div
@@ -1961,7 +2278,7 @@ export default function Schedule() {
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white w-full max-w-md rounded-t-2xl px-5 pt-5 pb-8 flex flex-col max-h-[90vh] shadow-[0_-8px_30px_rgb(0,0,0,0.12)]"
+              className="bg-white w-full rounded-t-2xl px-5 pt-5 pb-8 flex flex-col max-h-[90vh] shadow-[0_-8px_30px_rgb(0,0,0,0.12)]"
             >
               <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto mb-6 shrink-0"></div>
 
@@ -2132,9 +2449,9 @@ export default function Schedule() {
               </div>
 
                 {(() => {
-                  const regId = shiftDetailModal.registrationId || `REG-${shiftDetailModal.id.slice(-6)}`;
+                  const regId = shiftDetailModal.registrationId;
                   const activeCancelRequest = shiftDetailModal.status === "pending"
-                    ? (getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftDetailModal.id && cr.status === "PENDING"))
+                    ? (regId ? getShiftRegistrationCancelRequest(regId) : null) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftDetailModal.id && cr.status === "PENDING")
                     : null;
 
                   // Khi đã có yêu cầu hủy đang chờ duyệt: hiển thị banner full-width bên trên, 2 nút Đóng và Thu hồi yêu cầu nằm ngang hàng cân đối bên dưới
@@ -2243,7 +2560,7 @@ export default function Schedule() {
                                 onClick={() => {
                                   const res = handleShiftAction(shiftDetailModal.id, "cancel");
                                   if (res) {
-                                    setToast({message: "Hủy ca thành công!", type: 'success'});
+                                    setToast({message: "Đã hủy đăng ký ca.", type: 'success'});
                                     setShiftDetailModal(null);
                                   }
                                 }}
@@ -2358,7 +2675,7 @@ export default function Schedule() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[120] flex justify-center items-end"
+            className="fixed inset-y-0 left-0 right-0 max-w-md mx-auto bg-black/70 backdrop-blur-xs z-[200] flex justify-center items-end overflow-hidden"
             onClick={() => setShowShiftCancelModal(false)}
           >
             <motion.div
@@ -2367,14 +2684,14 @@ export default function Schedule() {
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white w-full max-w-md rounded-t-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl pb-safe"
+              className="bg-white w-full rounded-t-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl pb-safe"
             >
               {/* Header */}
               <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
                 <div>
                   <h2 className="text-base font-bold text-gray-900">Yêu cầu hủy đăng ký ca</h2>
                   <p className="text-xs text-gray-500">
-                    Mã đăng ký: {shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`}
+                    Mã đăng ký: {shiftCancelTarget.registrationId || "Chưa cấp mã"}
                   </p>
                 </div>
                 <button
@@ -2413,7 +2730,7 @@ export default function Schedule() {
                     <div className="flex justify-between">
                       <span className="text-gray-500">Vị trí / Kỹ năng:</span>
                       <span className="font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-amber-200">
-                        {shiftCancelTarget.requestedSkillTagId || shiftCancelTarget.skillTag}
+                        {resolveSkillLabel(shiftCancelTarget.requestedSkillTagId || shiftCancelTarget.skillTag)}
                       </span>
                     </div>
                   </div>
@@ -2421,8 +2738,10 @@ export default function Schedule() {
 
                 {/* Duplicate protection warning */}
                 {(() => {
-                  const regId = shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`;
-                  const activePending = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING");
+                  const regId = shiftCancelTarget.registrationId;
+                  const activePending = regId
+                    ? (getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING"))
+                    : null;
                   if (activePending) {
                     return (
                       <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 font-bold flex items-center gap-2">
@@ -2460,8 +2779,10 @@ export default function Schedule() {
               {/* Footer CTA */}
               <div className="p-4 border-t border-gray-100 bg-white">
                 {(() => {
-                  const regId = shiftCancelTarget.registrationId || `REG-${shiftCancelTarget.id.slice(-6)}`;
-                  const activePending = getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING");
+                  const regId = shiftCancelTarget.registrationId;
+                  const activePending = regId
+                    ? (getShiftRegistrationCancelRequest(regId) || shiftRegistrationCancelRequests.find(cr => cr.shiftId === shiftCancelTarget.id && cr.status === "PENDING"))
+                    : null;
                   const isBlocked = Boolean(activePending) || !shiftCancelReason.trim();
 
                   return (
@@ -2503,7 +2824,7 @@ export default function Schedule() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[130] flex justify-center items-end"
+            className="fixed inset-y-0 left-0 right-0 max-w-md mx-auto bg-black/75 backdrop-blur-xs z-[220] flex justify-center items-end overflow-hidden"
             onClick={() => setShowWithdrawConfirmModal(false)}
           >
             <motion.div
@@ -2512,7 +2833,7 @@ export default function Schedule() {
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white w-full max-w-md rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
+              className="bg-white w-full rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
             >
               <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto -mt-1 mb-1 shrink-0" />
               

@@ -16,8 +16,16 @@ import Requests from './screens/Requests';
 import Profile from './screens/Profile';
 import Notifications from './screens/Notifications';
 import Payslip from './screens/Payslip';
-
 import Timesheet from './screens/Timesheet';
+import { APP_BUILD_ID } from './buildInfo';
+
+function StaticBuildMarker() {
+  return (
+    <div className="fixed bottom-1 right-1.5 z-[99999] pointer-events-none select-none text-[9px] font-mono font-medium tracking-tight text-slate-600/90 bg-white/80 backdrop-blur-xs px-1.5 py-0.5 rounded border border-slate-300/80 shadow-xs">
+      BUILD {APP_BUILD_ID}
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -44,6 +52,9 @@ export default function App() {
           </Routes>
         </BrowserRouter>
       </AppProvider>
+
+      {/* Static Build Fingerprint */}
+      <StaticBuildMarker />
     </div>
   );
 }

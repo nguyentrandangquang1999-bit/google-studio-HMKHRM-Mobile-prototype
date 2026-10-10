@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import ScreenHeader from "@/components/ScreenHeader";
-import { useApp, LeaveRequestType, AttendanceTicket } from "@/context/AppContext";
+import { useApp, LeaveRequestType, AttendanceTicket, resolveSkillLabel } from "@/context/AppContext";
 import { format } from "date-fns";
 import { vi } from "date-fns/locale";
 import {
@@ -25,6 +25,7 @@ import {
   FastForward,
   CalendarX,
   Undo2,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -175,6 +176,7 @@ export default function Requests() {
     setQaDiagnosticResult,
     shiftRegistrationCancelRequests,
     withdrawShiftRegistrationCancelRequest,
+    resetShiftCancelQa,
   } = useApp();
   
   const [activeTab, setActiveTab] = useState<RequestTab>("received");
@@ -1228,6 +1230,25 @@ export default function Requests() {
             exit={{ opacity: 0, y: -10 }}
             className="space-y-4"
           >
+            {filterType === "shift_cancel" && (
+              <div className="flex items-center justify-between p-3 bg-amber-50/90 border border-amber-200/80 rounded-2xl mb-1 text-xs shadow-xs">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                  <span className="font-bold text-amber-900 text-xs">Yêu cầu hủy đăng ký ca</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetShiftCancelQa();
+                    setToast({ message: "Đã khôi phục dữ liệu mẫu các yêu cầu hủy ca (gồm ticket Chờ duyệt).", type: "info" });
+                  }}
+                  className="text-[11px] font-bold text-amber-800 hover:text-amber-950 underline flex items-center gap-1 cursor-pointer active:scale-95 transition-all"
+                >
+                  <RotateCcw className="w-3 h-3 text-amber-700" /> Khôi phục ticket mẫu (Reset QA)
+                </button>
+              </div>
+            )}
+
             {filteredList.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 px-8 text-center bg-gray-50/50 rounded-2xl border-2 border-dashed border-gray-200 mt-2">
                 <div className="w-16 h-16 bg-white rounded-full shadow-sm flex items-center justify-center text-gray-300 mb-4">
@@ -2146,7 +2167,7 @@ export default function Requests() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-[100] flex justify-center items-end"
+            className="fixed inset-y-0 left-0 right-0 max-w-md mx-auto bg-black/60 z-[100] flex justify-center items-end overflow-hidden"
             onClick={() => setSelectedLeave(null)}
           >
             <motion.div
@@ -2155,7 +2176,7 @@ export default function Requests() {
               exit={{ y: "100%", opacity: 1 }}
               transition={{ type: "spring", damping: 25, stiffness: 300 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white w-full sm:max-w-md rounded-t-2xl max-h-[90vh] flex flex-col shadow-[0_-8px_30px_rgb(0,0,0,0.12)] relative"
+              className="bg-white w-full rounded-t-2xl max-h-[90vh] flex flex-col shadow-[0_-8px_30px_rgb(0,0,0,0.12)] relative"
             >
               {/* Drag Handle */}
               <div className="w-full flex justify-center pt-3 pb-2 absolute top-0 left-0 z-20">
@@ -2166,7 +2187,11 @@ export default function Requests() {
               <div className="flex justify-between items-start px-5 pt-8 pb-4 bg-white sticky top-0 z-10 shrink-0 border-b border-gray-100">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900 mb-1">
-                    {selectedLeave.type === "attendance_ticket" ? "Chi tiết giải trình điểm danh" : "Chi tiết đơn nghỉ phép"}
+                    {selectedLeave.type === "shift_cancel"
+                      ? "Chi tiết yêu cầu hủy ca"
+                      : selectedLeave.type === "attendance_ticket"
+                      ? "Chi tiết giải trình điểm danh"
+                      : "Chi tiết đơn nghỉ phép"}
                   </h2>
                   <div className="flex items-center gap-2">
                     {renderStatus(selectedLeave.status, selectedLeave.statusLabel)}
@@ -2206,10 +2231,10 @@ export default function Requests() {
 
                   <div>
                     <span className="block text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">
-                      {selectedLeave.type === "shift_cancel" ? "Ngày gửi yêu cầu" : selectedLeave.type === "attendance_ticket" ? "Ngày vắng mặt / làm việc" : "Thời gian nghỉ"}
+                      {selectedLeave.type === "shift_cancel" ? "Ngày ca làm việc" : selectedLeave.type === "attendance_ticket" ? "Ngày vắng mặt / làm việc" : "Thời gian nghỉ"}
                     </span>
                     <p className="font-bold text-primary text-sm flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-primary" /> {selectedLeave.date}
+                      <Clock className="w-4 h-4 text-primary" /> {selectedLeave.type === "shift_cancel" && selectedLeave.detail.relatedShift?.date instanceof Date ? format(selectedLeave.detail.relatedShift.date, "EEEE, dd/MM/yyyy", { locale: vi }) : selectedLeave.date}
                     </p>
                   </div>
 
@@ -2233,7 +2258,7 @@ export default function Requests() {
                               🏬 {selectedLeave.detail.branch} • ⏱️ {selectedLeave.detail.relatedShift.hours} giờ
                             </p>
                             <p className="text-slate-600">
-                              🏷️ Vị trí / Kỹ năng: <span className="font-bold text-slate-800">{selectedLeave.detail.requestedSkillTagId || selectedLeave.detail.relatedShift.skillTag}</span>
+                              🏷️ Vị trí / Kỹ năng: <span className="font-bold text-slate-800">{resolveSkillLabel(selectedLeave.detail.requestedSkillTagId || selectedLeave.detail.relatedShift.skillTag)}</span>
                             </p>
                           </div>
                         ) : (
@@ -2518,7 +2543,7 @@ export default function Requests() {
                 )}
 
                 {/* --- REJECTED / AUTO_REJECTED REASON --- */}
-                {(selectedLeave.status === "rejected-manager" || selectedLeave.status === "auto-rejected" || selectedLeave.detail.rawStatus === "REJECTED" || selectedLeave.detail.rawStatus === "AUTO_REJECTED") && (
+                {selectedLeave.type !== "shift_cancel" && (selectedLeave.status === "rejected-manager" || selectedLeave.status === "auto-rejected" || selectedLeave.detail.rawStatus === "REJECTED" || selectedLeave.detail.rawStatus === "AUTO_REJECTED") && (
                   <div className={cn(
                     "p-4 rounded-xl border space-y-1",
                     selectedLeave.status === "auto-rejected" || selectedLeave.detail.rawStatus === "AUTO_REJECTED" ? "bg-purple-50 border-purple-200 text-purple-900" : "bg-red-50 border-red-200 text-red-900"
@@ -2598,7 +2623,9 @@ export default function Requests() {
                             <CheckCircle2 className="w-3.5 h-3.5" />
                          </div>
                          <div className="w-[calc(100%-2.5rem)] bg-white p-2.5 rounded-xl border border-slate-200">
-                            <div className="text-xs font-bold text-slate-900">Đã gửi đơn</div>
+                            <div className="text-xs font-bold text-slate-900">
+                              {selectedLeave.type === "leave" ? "Đã gửi đơn" : "Đã gửi yêu cầu"}
+                            </div>
                             <div className="text-[10px] text-slate-500 font-medium">{selectedLeave.detail.submittedAt}</div>
                          </div>
                       </div>
@@ -2610,6 +2637,8 @@ export default function Requests() {
                               ? "bg-amber-500"
                               : selectedLeave.status === "approved" || selectedLeave.detail.rawStatus === "APPROVED"
                               ? "bg-green-500"
+                              : selectedLeave.status === "withdrawn" || selectedLeave.detail.rawStatus === "WITHDRAWN"
+                              ? "bg-slate-600"
                               : selectedLeave.status === "cancelled" || selectedLeave.detail.rawStatus === "CANCELLED"
                               ? "bg-gray-500"
                               : selectedLeave.status === "auto-rejected" || selectedLeave.detail.rawStatus === "AUTO_REJECTED"
@@ -2618,6 +2647,10 @@ export default function Requests() {
                          )}>
                             {selectedLeave.status === "approved" || selectedLeave.detail.rawStatus === "APPROVED" ? (
                               <CheckCircle2 className="w-3.5 h-3.5" />
+                            ) : selectedLeave.status === "withdrawn" || selectedLeave.detail.rawStatus === "WITHDRAWN" ? (
+                              <Undo2 className="w-3.5 h-3.5" />
+                            ) : selectedLeave.status === "pending-manager" || selectedLeave.detail.rawStatus === "PENDING" ? (
+                              <Clock className="w-3.5 h-3.5" />
                             ) : (
                               <XCircle className="w-3.5 h-3.5" />
                             )}
@@ -2628,6 +2661,8 @@ export default function Requests() {
                                   ? "Chờ duyệt"
                                   : selectedLeave.status === "approved" || selectedLeave.detail.rawStatus === "APPROVED"
                                   ? "Đã duyệt"
+                                  : selectedLeave.status === "withdrawn" || selectedLeave.detail.rawStatus === "WITHDRAWN"
+                                  ? "Đã thu hồi"
                                   : selectedLeave.status === "cancelled" || selectedLeave.detail.rawStatus === "CANCELLED"
                                   ? (selectedLeave.originalRequest?.cancellationSource === "APPROVED_CANCEL_REQUEST" || getCancelRequestForLeave(selectedLeave.id)?.status === "APPROVED"
                                       ? "Yêu cầu hủy đã được duyệt"
@@ -2636,6 +2671,15 @@ export default function Requests() {
                                   ? "Tự động từ chối"
                                   : "Đã từ chối"}
                             </div>
+                            {(selectedLeave.status === "withdrawn" || selectedLeave.detail.rawStatus === "WITHDRAWN") && selectedLeave.detail.withdrawnAt ? (
+                              <div className="text-[10px] text-slate-500 font-medium">
+                                Thời gian thu hồi: {selectedLeave.detail.withdrawnAt}
+                              </div>
+                            ) : selectedLeave.detail.decidedAt ? (
+                              <div className="text-[10px] text-slate-500 font-medium">
+                                {selectedLeave.detail.decidedAt}
+                              </div>
+                            ) : null}
                          </div>
                       </div>
                    </div>
@@ -2742,7 +2786,7 @@ export default function Requests() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[130] flex justify-center items-end"
+            className="fixed inset-y-0 left-0 right-0 max-w-md mx-auto bg-black/75 backdrop-blur-xs z-[220] flex justify-center items-end overflow-hidden"
             onClick={() => setShowWithdrawShiftCancelModal(false)}
           >
             <motion.div
@@ -2751,7 +2795,7 @@ export default function Requests() {
               exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white w-full max-w-md rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
+              className="bg-white w-full rounded-t-3xl overflow-hidden shadow-2xl flex flex-col p-5 space-y-4 pb-safe"
             >
               <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto -mt-1 mb-1 shrink-0" />
               <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center mx-auto text-amber-600">
@@ -2789,7 +2833,7 @@ export default function Requests() {
                       setToast({ message: res.message, type: "error" });
                     }
                   }}
-                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-[0.98]"
+                  className="flex-1 py-3 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md active:scale-[0.98]"
                 >
                   Thu hồi yêu cầu
                 </button>
